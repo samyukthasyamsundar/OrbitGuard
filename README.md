@@ -7,7 +7,7 @@ telemetry over UDP to a separate **ground station** receiver on localhost. The p
 the project is the engineering around the link: an explicit wire protocol, validation,
 and failure handling.
 
-**Status: Phase 2.** Simulator, ground station, protocol, tests, and a live web dashboard.
+**Status: Phase 3.** Simulator, ground station, protocol, tests, a live web dashboard, and link fault injection.
 
 ![OrbitGuard dashboard](docs/dashboard.png)
 
@@ -45,6 +45,29 @@ port, `--no-dashboard` turns it off). Both programs accept `--help`. The simulat
 telemetry); the ground station takes `--max-packets N` and `--idle-timeout-s N` so it can
 be scripted. Ctrl-C stops either one cleanly, and the ground station prints a summary
 (valid, rejected, lost, duplicate and out-of-order counts).
+
+## Testing a degraded link
+
+`satellite_sim` can impair its own link so you can watch the ground station cope. Each
+flag is a probability between 0 and 1, and `--fault-seed` makes a run reproducible:
+
+```sh
+./build/ground_station --port 5000
+./build/satellite_sim --port 5000 --rate-hz 5 --drop 0.1 --corrupt 0.1 --duplicate 0.1 --reorder 0.1
+```
+
+| Flag | Effect | What the ground station does |
+|------|--------|------------------------------|
+| `--drop` | packet never sent | shows as a gap in the sequence |
+| `--corrupt` | one bit flipped, or the datagram truncated | rejected (CRC, length or header check), counted under Rejected |
+| `--duplicate` | packet sent twice | second copy counted as a duplicate, not charted twice |
+| `--reorder` | packet delayed behind the next one | counted as out of order, not charted |
+
+![Dashboard on a degraded link](docs/dashboard-degraded.png)
+
+The simulator prints how many faults it injected, so the two sides can be reconciled.
+Faults are applied after encoding, on the wire bytes, so they exercise the real
+validation path rather than a mock.
 
 ## Architecture
 
@@ -174,7 +197,8 @@ dashboard can reuse it unchanged.
 - Restart detection assumes the sender timestamp does not go backwards within a session
   (a wall-clock step would look like out-of-order packets until it catches up).
 - The tracker counts a gap as loss immediately, so a late-arriving packet is counted as
-  both lost and out-of-order.
+  both a gap and out-of-order. The dashboard labels this tile "Gaps" for that reason; with
+  fault injection on, gaps exceed the number of packets actually dropped.
 - No Windows support (POSIX sockets).
 - The dashboard keeps the latest 600 samples in memory only; there is no persistence.
 - The dashboard has no authentication; it relies on being bound to localhost.

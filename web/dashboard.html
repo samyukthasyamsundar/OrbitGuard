@@ -198,7 +198,7 @@ noscript { display: block; padding: 16px; }
   var TILES = [
     { key: 'valid', label: 'Received', sub: 'valid packets' },
     { key: 'rejected', label: 'Rejected', sub: 'failed validation' },
-    { key: 'lost', label: 'Lost', sub: 'inferred from gaps' },
+    { key: 'lost', label: 'Gaps', sub: 'missing at arrival; late ones also count' },
     { key: 'duplicates', label: 'Duplicates', sub: 'repeated sequence' },
     { key: 'out_of_order', label: 'Out of order', sub: 'late arrivals' },
     { key: 'restarts', label: 'Sender restarts', sub: 'sequence reset' }

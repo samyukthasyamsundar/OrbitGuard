@@ -13,6 +13,7 @@ add_library(orbitguard_core
     src/crc16.cpp
     src/packet_codec.cpp
     src/dashboard_routes.cpp
+    src/fault_injector.cpp
     src/http_server.cpp
     src/sequence_tracker.cpp
     src/snapshot_json.cpp
@@ -54,6 +55,7 @@ if(ORBITGUARD_BUILD_TESTS)
         tests/test_packet_codec.cpp
         tests/test_sequence_tracker.cpp
         tests/test_telemetry_generator.cpp
+        tests/test_fault_injector.cpp
         tests/test_telemetry_store.cpp
         tests/test_snapshot_json.cpp
         tests/test_http_server.cpp

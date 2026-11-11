@@ -6,6 +6,7 @@
 #include <cstring>
 #include <thread>
 
+#include "orbitguard/fault_injector.hpp"
 #include "orbitguard/packet_codec.hpp"
 #include "orbitguard/telemetry_generator.hpp"
 #include "orbitguard/udp_socket.hpp"
@@ -19,11 +20,18 @@ void on_signal(int) { g_stop = 1; }
 void usage(const char* prog) {
     std::fprintf(stderr,
         "Usage: %s [--port N] [--rate-hz N] [--count N] [--seed N] [--time-scale X]\n"
+        "          [--drop P] [--corrupt P] [--duplicate P] [--reorder P] [--fault-seed N]\n"
         "  --port N        ground station UDP port on localhost (default 5000)\n"
         "  --rate-hz N     packets per wall-clock second (default 1)\n"
         "  --count N       stop after N packets (default 0 = run until Ctrl-C)\n"
         "  --seed N        RNG seed for reproducible telemetry (default 42)\n"
-        "  --time-scale X  simulated seconds per real second (default 60)\n", prog);
+        "  --time-scale X  simulated seconds per real second (default 60)\n"
+        "Link faults (probabilities 0..1, default 0), to exercise the ground station:\n"
+        "  --drop P        packet is never sent\n"
+        "  --corrupt P     packet gets a bit flip or is truncated\n"
+        "  --duplicate P   packet is sent twice\n"
+        "  --reorder P     packet is delayed behind the next one\n"
+        "  --fault-seed N  RNG seed for the faults (default 1)\n", prog);
 }
 
 bool parse_num(const char* s, double& out) {
@@ -35,6 +43,7 @@ bool parse_num(const char* s, double& out) {
 
 int main(int argc, char** argv) {
     double port = 5000, rate = 1, count = 0, seed = 42, scale = 60;
+    double drop = 0, corrupt = 0, duplicate = 0, reorder = 0, fault_seed = 1;
     for (int i = 1; i < argc; ++i) {
         double* target = nullptr;
         if (!std::strcmp(argv[i], "--port")) target = &port;
@@ -42,12 +51,25 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--count")) target = &count;
         else if (!std::strcmp(argv[i], "--seed")) target = &seed;
         else if (!std::strcmp(argv[i], "--time-scale")) target = &scale;
+        else if (!std::strcmp(argv[i], "--drop")) target = &drop;
+        else if (!std::strcmp(argv[i], "--corrupt")) target = &corrupt;
+        else if (!std::strcmp(argv[i], "--duplicate")) target = &duplicate;
+        else if (!std::strcmp(argv[i], "--reorder")) target = &reorder;
+        else if (!std::strcmp(argv[i], "--fault-seed")) target = &fault_seed;
         else if (!std::strcmp(argv[i], "--help")) { usage(argv[0]); return 0; }
         if (!target || i + 1 >= argc || !parse_num(argv[++i], *target)) { usage(argv[0]); return 2; }
     }
     if (port < 1 || port > 65535 || rate <= 0 || rate > 1000 || count < 0 || seed < 0 || scale <= 0) {
         std::fprintf(stderr, "error: argument out of range\n");
         usage(argv[0]);
+        return 2;
+    }
+
+    FaultConfig fc;
+    fc.drop = drop; fc.corrupt = corrupt; fc.duplicate = duplicate; fc.reorder = reorder;
+    fc.seed = static_cast<std::uint32_t>(fault_seed);
+    if (!fc.valid() || fault_seed < 0 || fault_seed > 4294967295.0) {
+        std::fprintf(stderr, "error: fault probabilities must be between 0 and 1\n");
         return 2;
     }
 
@@ -58,6 +80,13 @@ int main(int argc, char** argv) {
     if (!sock) { std::fprintf(stderr, "error: %s\n", sock.error().message.c_str()); return 1; }
 
     TelemetryGenerator gen(static_cast<std::uint32_t>(seed));
+    FaultInjector faults(fc);
+    auto transmit = [&](const std::vector<std::vector<std::uint8_t>>& datagrams) {
+        for (const auto& d : datagrams) {
+            auto r = sock.value().send_to_loopback(static_cast<std::uint16_t>(port), d);
+            if (!r) std::fprintf(stderr, "send error: %s\n", r.error().message.c_str());
+        }
+    };
     const auto period = std::chrono::duration<double>(1.0 / rate);
     const double sim_dt = scale / rate;
     auto next_tick = std::chrono::steady_clock::now();
@@ -73,14 +102,25 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "encode error: %s\n", to_string(bytes.error()));
             return 1;
         }
-        auto sent_ok = sock.value().send_to_loopback(static_cast<std::uint16_t>(port), bytes.value());
-        if (!sent_ok) std::fprintf(stderr, "send error: %s\n", sent_ok.error().message.c_str());
-        else std::printf("sent seq=%u batt=%.1f%% temp=%.1fC cpu=%.1f%% sig=%.1fdBm\n",
-                         t.sequence, t.battery_pct, t.temperature_c, t.cpu_pct, t.signal_dbm);
+        const std::size_t wire = [&] {
+            auto out = faults.process(bytes.value());
+            transmit(out);
+            return out.size();
+        }();
+        std::printf("sent seq=%u batt=%.1f%% temp=%.1fC cpu=%.1f%% sig=%.1fdBm%s\n",
+                    t.sequence, t.battery_pct, t.temperature_c, t.cpu_pct, t.signal_dbm,
+                    fc.any() ? (wire == 0 ? " [not delivered]" : wire > 1 ? " [multiple datagrams]" : "") : "");
         std::fflush(stdout);
 
         next_tick += std::chrono::duration_cast<std::chrono::steady_clock::duration>(period);
         std::this_thread::sleep_until(next_tick);
+    }
+    transmit(faults.flush());  // release a packet still held back for reordering
+    if (fc.any()) {
+        const FaultStats& fs = faults.stats();
+        std::printf("faults injected: dropped=%llu corrupted=%llu duplicated=%llu reordered=%llu\n",
+                    static_cast<unsigned long long>(fs.dropped), static_cast<unsigned long long>(fs.corrupted),
+                    static_cast<unsigned long long>(fs.duplicated), static_cast<unsigned long long>(fs.reordered));
     }
     return 0;
 }
