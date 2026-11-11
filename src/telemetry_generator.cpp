@@ -10,8 +10,18 @@ constexpr double kPi = 3.14159265358979323846;
 double clamp(double v, double lo, double hi) { return std::min(hi, std::max(lo, v)); }
 }  // namespace
 
-TelemetryGenerator::TelemetryGenerator(std::uint32_t seed, double orbit_period_s)
-    : rng_(seed), period_s_(orbit_period_s) {}
+bool parse_scenario(const std::string& name, Scenario& out) {
+    if (name == "nominal") out = Scenario::Nominal;
+    else if (name == "battery-drain") out = Scenario::BatteryDrain;
+    else if (name == "overheat") out = Scenario::Overheat;
+    else if (name == "cpu-spike") out = Scenario::CpuSpike;
+    else if (name == "signal-loss") out = Scenario::SignalLoss;
+    else return false;
+    return true;
+}
+
+TelemetryGenerator::TelemetryGenerator(std::uint32_t seed, double orbit_period_s, Scenario scenario)
+    : rng_(seed), period_s_(orbit_period_s), scenario_(scenario) {}
 
 Telemetry TelemetryGenerator::next(double dt_s, std::uint64_t timestamp_ms) {
     std::normal_distribution<double> noise(0.0, 1.0);
@@ -33,13 +43,26 @@ Telemetry TelemetryGenerator::next(double dt_s, std::uint64_t timestamp_ms) {
     // Signal: strongest at the middle of the sunlit pass (proxy for ground-station elevation).
     const double sig = -95.0 + 25.0 * std::sin(phase * 2.0 * kPi) * std::sin(phase * 2.0 * kPi) + 1.5 * noise(rng_);
 
+    double batt_out = battery_, temp_out = temp_ + 0.5 * noise(rng_), cpu_out = cpu, sig_out = sig;
+    if (scenario_ != Scenario::Nominal) {
+        anomaly_s_ += dt_s;
+        const double k = anomaly_s_ / 60.0;  // minutes of simulated time since the anomaly began
+        switch (scenario_) {
+            case Scenario::BatteryDrain: batt_out = battery_ - 0.5 * k; break;
+            case Scenario::Overheat: temp_out += 1.2 * k; break;
+            case Scenario::CpuSpike: cpu_out = 97.0 + 1.5 * noise(rng_); break;
+            case Scenario::SignalLoss: sig_out = sig - 2.0 * k; break;
+            case Scenario::Nominal: break;
+        }
+    }
+
     Telemetry t;
     t.sequence = seq_++;
     t.timestamp_ms = timestamp_ms;
-    t.battery_pct = battery_;
-    t.temperature_c = clamp(temp_ + 0.5 * noise(rng_), limits::kTempMin, limits::kTempMax);
-    t.cpu_pct = clamp(cpu, limits::kCpuMin, limits::kCpuMax);
-    t.signal_dbm = clamp(sig, limits::kSignalMin, limits::kSignalMax);
+    t.battery_pct = clamp(batt_out, limits::kBatteryMin, limits::kBatteryMax);
+    t.temperature_c = clamp(temp_out, limits::kTempMin, limits::kTempMax);
+    t.cpu_pct = clamp(cpu_out, limits::kCpuMin, limits::kCpuMax);
+    t.signal_dbm = clamp(sig_out, limits::kSignalMin, limits::kSignalMax);
     return t;
 }
 

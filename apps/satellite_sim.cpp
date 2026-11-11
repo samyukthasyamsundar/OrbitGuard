@@ -20,12 +20,15 @@ void on_signal(int) { g_stop = 1; }
 void usage(const char* prog) {
     std::fprintf(stderr,
         "Usage: %s [--port N] [--rate-hz N] [--count N] [--seed N] [--time-scale X]\n"
+        "          [--scenario NAME]\n"
         "          [--drop P] [--corrupt P] [--duplicate P] [--reorder P] [--fault-seed N]\n"
         "  --port N        ground station UDP port on localhost (default 5000)\n"
         "  --rate-hz N     packets per wall-clock second (default 1)\n"
         "  --count N       stop after N packets (default 0 = run until Ctrl-C)\n"
         "  --seed N        RNG seed for reproducible telemetry (default 42)\n"
         "  --time-scale X  simulated seconds per real second (default 60)\n"
+        "  --scenario NAME inject an anomaly to trigger dashboard alerts: nominal (default),\n"
+        "                  battery-drain, overheat, cpu-spike, signal-loss\n"
         "Link faults (probabilities 0..1, default 0), to exercise the ground station:\n"
         "  --drop P        packet is never sent\n"
         "  --corrupt P     packet gets a bit flip or is truncated\n"
@@ -44,7 +47,12 @@ bool parse_num(const char* s, double& out) {
 int main(int argc, char** argv) {
     double port = 5000, rate = 1, count = 0, seed = 42, scale = 60;
     double drop = 0, corrupt = 0, duplicate = 0, reorder = 0, fault_seed = 1;
+    Scenario scenario = Scenario::Nominal;
     for (int i = 1; i < argc; ++i) {
+        if (!std::strcmp(argv[i], "--scenario")) {
+            if (i + 1 >= argc || !parse_scenario(argv[++i], scenario)) { usage(argv[0]); return 2; }
+            continue;
+        }
         double* target = nullptr;
         if (!std::strcmp(argv[i], "--port")) target = &port;
         else if (!std::strcmp(argv[i], "--rate-hz")) target = &rate;
@@ -79,7 +87,7 @@ int main(int argc, char** argv) {
     auto sock = UdpSocket::create();
     if (!sock) { std::fprintf(stderr, "error: %s\n", sock.error().message.c_str()); return 1; }
 
-    TelemetryGenerator gen(static_cast<std::uint32_t>(seed));
+    TelemetryGenerator gen(static_cast<std::uint32_t>(seed), 90.0 * 60.0, scenario);
     FaultInjector faults(fc);
     auto transmit = [&](const std::vector<std::vector<std::uint8_t>>& datagrams) {
         for (const auto& d : datagrams) {

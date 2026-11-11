@@ -117,6 +117,21 @@ button:focus-visible, .plot:focus-visible { outline: 2px solid var(--series); ou
 .tip-val { font-size: 14px; font-weight: 600; color: var(--ink); }
 .tip-name { color: var(--ink2); }
 
+
+.alerts { display: grid; gap: 8px; margin-bottom: 16px; }
+.alert {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px;
+  padding: 10px 14px; border-radius: 10px; background: var(--surface);
+  border: 1px solid var(--border); border-left-width: 4px;
+}
+.alert.warning { border-left-color: var(--warn); }
+.alert.critical { border-left-color: var(--crit); }
+.alert .a-title { font-weight: 600; }
+.alert .a-detail { color: var(--ink2); }
+.badge { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 600; color: var(--ink); margin-left: 8px; vertical-align: middle; }
+.badge .ico { width: 12px; height: 12px; }
+.card.has-alert { border-color: var(--axis); }
+
 h2.section { margin: 28px 0 12px; color: var(--ink2); }
 .tiles { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
 .tile { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 12px 16px; }
@@ -163,6 +178,8 @@ noscript { display: block; padding: 16px; }
     <button class="btn" id="table-toggle" type="button" aria-pressed="false">Table view</button>
   </div>
 
+  <div class="alerts" id="alerts" role="region" aria-label="Active alerts" aria-live="polite"></div>
+
   <div class="empty" id="empty" hidden>
     <strong>Waiting for telemetry</strong>
     Start <code>satellite_sim</code> with <code>--port</code> set to this ground station&rsquo;s UDP port.
@@ -190,6 +207,7 @@ noscript { display: block; padding: 16px; }
     { key: 'cpu', label: 'CPU utilization', unit: '%', domain: [0, 100] },
     { key: 'signal', label: 'Signal strength', unit: 'dBm', minSpan: 4 }
   ];
+  var METRIC_BY_KEY = { battery: 0, temperature: 1, cpu: 2, signal: 3 };  // API metric name -> METRICS index
   var WINDOWS = [
     { label: '1 min', ms: 60000 },
     { label: '5 min', ms: 300000 },
@@ -201,11 +219,12 @@ noscript { display: block; padding: 16px; }
     { key: 'lost', label: 'Gaps', sub: 'missing at arrival; late ones also count' },
     { key: 'duplicates', label: 'Duplicates', sub: 'repeated sequence' },
     { key: 'out_of_order', label: 'Out of order', sub: 'late arrivals' },
-    { key: 'restarts', label: 'Sender restarts', sub: 'sequence reset' }
+    { key: 'restarts', label: 'Sender restarts', sub: 'sequence reset' },
+    { key: 'alerts_raised', label: 'Alerts raised', sub: 'since ground station start' }
   ];
 
   var state = {
-    samples: [], stats: null, serverTime: 0,
+    samples: [], alerts: [], stats: null, serverTime: 0,
     online: false, loaded: false,
     windowMs: 300000, table: false, hover: {}, lastKey: ''
   };
@@ -500,6 +519,56 @@ noscript { display: block; padding: 16px; }
     t.appendChild(tb);
   }
 
+
+  // ---------- alerts: icon + label + words, never colour alone ----------
+  var SEV_WORD = { warning: 'Warning', critical: 'Critical' };
+  function sevIcon(sev) {
+    var svg = sv('svg', { 'class': 'ico', viewBox: '0 0 16 16', 'aria-hidden': 'true' });
+    if (sev === 'critical') {
+      svg.appendChild(sv('circle', { cx: 8, cy: 8, r: 7, fill: 'var(--crit)' }));
+      svg.appendChild(sv('path', { d: 'M5 5l6 6M11 5l-6 6', stroke: '#fff', 'stroke-width': 2, 'stroke-linecap': 'round' }));
+    } else {
+      svg.appendChild(sv('path', { d: 'M8 1.5 15 14H1z', fill: 'var(--warn)' }));
+      svg.appendChild(sv('path', { d: 'M8 6v4M8 11.6v.4', stroke: '#0b0b0b', 'stroke-width': 1.8, 'stroke-linecap': 'round' }));
+    }
+    return svg;
+  }
+  function alertSentence(a, m) {
+    var dir = a.side === 'low' ? 'below' : 'above';
+    return m.label + ' ' + fmtNum(a.value) + ' ' + m.unit + ' is ' + dir + ' its ' + a.severity + ' limit';
+  }
+  function renderAlerts() {
+    var host = document.getElementById('alerts');
+    host.replaceChildren();
+    var byMetric = {};
+    state.alerts.forEach(function (a) { byMetric[a.metric] = a; });
+
+    state.alerts.slice().sort(function (x, y) {
+      return (y.severity === 'critical') - (x.severity === 'critical');
+    }).forEach(function (a) {
+      var m = METRICS[METRIC_BY_KEY[a.metric]];
+      var row = el('div', 'alert ' + a.severity);
+      row.appendChild(sevIcon(a.severity));
+      row.appendChild(el('span', 'a-title', SEV_WORD[a.severity]));
+      row.appendChild(el('span', 'a-detail', alertSentence(a, m) + ' \u00b7 since ' + fmtTime(a.since)));
+      host.appendChild(row);
+    });
+
+    METRICS.forEach(function (m, i) {
+      var a = null;
+      for (var k in METRIC_BY_KEY) if (METRIC_BY_KEY[k] === i && byMetric[k]) a = byMetric[k];
+      var old = m.ui.card.querySelector('.badge');
+      if (old) old.remove();
+      m.ui.card.classList.toggle('has-alert', !!a);
+      if (a) {
+        var b = el('span', 'badge');
+        b.appendChild(sevIcon(a.severity));
+        b.appendChild(document.createTextNode(SEV_WORD[a.severity]));
+        m.ui.card.querySelector('.card-label').appendChild(b);
+      }
+    });
+  }
+
   // ---------- rendering ----------
   var tileValues = {};
   function buildTiles() {
@@ -517,6 +586,7 @@ noscript { display: block; padding: 16px; }
 
   function render() {
     renderStatus();
+    renderAlerts();
     var has = state.samples.length > 0;
     document.getElementById('empty').hidden = has || !state.loaded;
     document.getElementById('charts').hidden = !has || state.table;
@@ -543,6 +613,14 @@ noscript { display: block; padding: 16px; }
       for (var k in p) if (p[k] === null) return;
       out.push(p);
     });
+    var al = [];
+    (Array.isArray(d.alerts) ? d.alerts : []).forEach(function (a) {
+      if (!a || (a.severity !== 'warning' && a.severity !== 'critical')) return;
+      if (a.side !== 'low' && a.side !== 'high') return;
+      if (!Object.prototype.hasOwnProperty.call(METRIC_BY_KEY, a.metric) || num(a.value) === null || num(a.since_ms) === null) return;
+      al.push({ metric: a.metric, severity: a.severity, side: a.side, value: a.value, since: a.since_ms });
+    });
+    state.alerts = al;
     state.samples = out;
     state.stats = d.stats;
     state.serverTime = d.server_time_ms;

@@ -8,6 +8,7 @@
 #include <mutex>
 #include <vector>
 
+#include "orbitguard/alerts.hpp"
 #include "orbitguard/sequence_tracker.hpp"
 #include "orbitguard/telemetry.hpp"
 
@@ -22,6 +23,7 @@ struct LinkStats {
     std::uint64_t duplicates = 0;
     std::uint64_t out_of_order = 0;
     std::uint64_t restarts = 0;
+    std::uint64_t alerts_raised = 0;  // times any alert was raised or escalated
     bool has_last_rx = false;
     std::uint64_t last_rx_ms = 0;  // wall-clock time the last valid packet arrived
 };
@@ -29,14 +31,18 @@ struct LinkStats {
 struct Snapshot {
     LinkStats stats;
     std::vector<Telemetry> samples;  // oldest first
+    std::vector<Alert> alerts;       // active alerts as of the newest charted sample
 };
 
 class TelemetryStore {
 public:
-    explicit TelemetryStore(std::size_t capacity = kDefaultStoreCapacity);
+    explicit TelemetryStore(std::size_t capacity = kDefaultStoreCapacity,
+                            AlertConfig alerts = AlertConfig::defaults());
 
     // Record a validated packet. Duplicates and late (out-of-order) packets are
     // counted but not added to the history, which stays monotonic for charting.
+    // Alerts are evaluated only on samples that enter the history, so a stale
+    // or repeated packet can neither raise nor clear an alert.
     SequenceStatus ingest(const Telemetry& t, std::uint64_t rx_time_ms);
 
     // Record a packet that failed validation.
@@ -50,6 +56,7 @@ private:
     std::size_t capacity_;
     std::deque<Telemetry> samples_;
     SequenceTracker tracker_;
+    AlertEvaluator alerts_;
     std::uint64_t valid_ = 0, rejected_ = 0, last_rx_ms_ = 0;
     bool has_last_rx_ = false;
 };

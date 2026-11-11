@@ -7,7 +7,7 @@ telemetry over UDP to a separate **ground station** receiver on localhost. The p
 the project is the engineering around the link: an explicit wire protocol, validation,
 and failure handling.
 
-**Status: Phase 3.** Simulator, ground station, protocol, tests, a live web dashboard, and link fault injection.
+**Status: Phase 3.** Simulator, ground station, protocol, tests, a live web dashboard, link fault injection, and threshold alerts.
 
 ![OrbitGuard dashboard](docs/dashboard.png)
 
@@ -69,6 +69,33 @@ The simulator prints how many faults it injected, so the two sides can be reconc
 Faults are applied after encoding, on the wire bytes, so they exercise the real
 validation path rather than a mock.
 
+## Alerts
+
+The ground station evaluates every charted sample against warning and critical limits and
+shows active alerts as a banner plus a badge on the affected chart. Each alert uses an
+icon and a word as well as color.
+
+| Metric | Warning | Critical |
+|--------|---------|----------|
+| Battery | below 40 % | below 20 % |
+| Temperature | above 60 C or below -25 C | above 80 C or below -40 C |
+| CPU | above 85 % | above 95 % |
+| Signal | below -105 dBm | below -115 dBm |
+
+An alert clears only after the value recovers past its limit by a margin (3 units, 2 dBm
+for signal), so a reading hovering at a limit does not flap. Duplicate and late packets
+are never evaluated, so a repeated packet cannot clear or raise an alert.
+
+Nominal flight stays well inside these limits, so `satellite_sim` can inject an anomaly:
+
+```sh
+./build/satellite_sim --port 5000 --rate-hz 8 --time-scale 480 --scenario battery-drain
+```
+
+Scenarios: `battery-drain`, `overheat`, `cpu-spike`, `signal-loss` (default `nominal`).
+
+![Critical battery alert](docs/dashboard-alert.png)
+
 ## Architecture
 
 ```mermaid
@@ -109,6 +136,8 @@ The rejected datagram is reported on stderr: `rejected packet (7 bytes): packet 
 | `crc16.hpp`, `src/crc16.cpp` | CRC-16/CCITT-FALSE |
 | `packet_codec.*` | Wire format, `serialize`, `deserialize`, `CodecError` |
 | `telemetry_generator.*` | Seeded orbit/eclipse model that produces samples |
+| `alerts.*` | Threshold alerts with hysteresis |
+| `fault_injector.*` | Seeded drop, corrupt, duplicate and reorder of wire bytes |
 | `sequence_tracker.*` | Loss, duplicate and reorder accounting (wrap-safe) |
 | `telemetry_store.*` | Thread-safe sample history and link counters shared by the receiver and the web server |
 | `http_server.*`, `dashboard_routes.*`, `snapshot_json.*` | Minimal read-only localhost HTTP server, its routes, and the JSON API |
@@ -201,6 +230,9 @@ dashboard can reuse it unchanged.
   fault injection on, gaps exceed the number of packets actually dropped.
 - No Windows support (POSIX sockets).
 - The dashboard keeps the latest 600 samples in memory only; there is no persistence.
+- Alert limits are compiled in; there is no config file or command-line override yet.
+- The dashboard JavaScript has no automated tests. It was checked by hand in a browser,
+  and that found a real bug (the first metric's alerts were being dropped).
 - The dashboard has no authentication; it relies on being bound to localhost.
 
 ## License

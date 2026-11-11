@@ -4,7 +4,8 @@
 
 namespace orbitguard {
 
-TelemetryStore::TelemetryStore(std::size_t capacity) : capacity_(std::max<std::size_t>(1, capacity)) {}
+TelemetryStore::TelemetryStore(std::size_t capacity, AlertConfig alerts)
+    : capacity_(std::max<std::size_t>(1, capacity)), alerts_(alerts) {}
 
 SequenceStatus TelemetryStore::ingest(const Telemetry& t, std::uint64_t rx_time_ms) {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -14,6 +15,7 @@ SequenceStatus TelemetryStore::ingest(const Telemetry& t, std::uint64_t rx_time_
     last_rx_ms_ = rx_time_ms;
     if (st != SequenceStatus::Duplicate && st != SequenceStatus::OutOfOrder) {
         samples_.push_back(t);
+        alerts_.update(t);
         while (samples_.size() > capacity_) samples_.pop_front();
     }
     return st;
@@ -33,6 +35,8 @@ Snapshot TelemetryStore::snapshot(std::size_t max_samples) const {
     s.stats.duplicates = tracker_.duplicates();
     s.stats.out_of_order = tracker_.out_of_order();
     s.stats.restarts = tracker_.restarts();
+    s.stats.alerts_raised = alerts_.raised_count();
+    s.alerts = alerts_.active();
     s.stats.has_last_rx = has_last_rx_;
     s.stats.last_rx_ms = last_rx_ms_;
     const std::size_t n = std::min(max_samples, samples_.size());

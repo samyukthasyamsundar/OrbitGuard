@@ -10,7 +10,8 @@ TEST(SnapshotJson, EmptySnapshot) {
     Snapshot s;
     EXPECT_EQ(snapshot_to_json(s, 42),
               "{\"server_time_ms\":42,\"stats\":{\"valid\":0,\"rejected\":0,\"lost\":0,"
-              "\"duplicates\":0,\"out_of_order\":0,\"restarts\":0,\"last_rx_ms\":null},\"samples\":[]}");
+              "\"duplicates\":0,\"out_of_order\":0,\"restarts\":0,\"alerts_raised\":0,\"last_rx_ms\":null},"
+              "\"alerts\":[],\"samples\":[]}");
 }
 
 TEST(SnapshotJson, SamplesAndStats) {
@@ -41,4 +42,15 @@ TEST(SnapshotJson, MultipleSamplesAreCommaSeparated) {
     for (std::size_t i = pos; i < j.size(); ++i)
         if (j.compare(i, 3, "},{") == 0) ++commas;
     EXPECT_EQ(commas, 2u);
+}
+
+TEST(SnapshotJson, ActiveAlertsAreSerialised) {
+    Snapshot s;
+    s.alerts.push_back({Metric::Battery, Severity::Critical, 18.5, 1234, true});
+    s.alerts.push_back({Metric::Temperature, Severity::Warning, 61.0, 99, false});
+    const std::string j = snapshot_to_json(s, 0);
+    EXPECT_NE(j.find("{\"metric\":\"battery\",\"severity\":\"critical\",\"side\":\"low\",\"value\":18.50,\"since_ms\":1234}"),
+              std::string::npos);
+    EXPECT_NE(j.find("{\"metric\":\"temperature\",\"severity\":\"warning\",\"side\":\"high\",\"value\":61.00,\"since_ms\":99}"),
+              std::string::npos);
 }

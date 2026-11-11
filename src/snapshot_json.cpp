@@ -31,9 +31,23 @@ std::string snapshot_to_json(const Snapshot& s, std::uint64_t server_time_ms) {
     field(o, "duplicates", s.stats.duplicates);
     field(o, "out_of_order", s.stats.out_of_order);
     field(o, "restarts", s.stats.restarts);
+    field(o, "alerts_raised", s.stats.alerts_raised);
     o += "\"last_rx_ms\":";
     o += s.stats.has_last_rx ? std::to_string(s.stats.last_rx_ms) : "null";
-    o += "},\"samples\":[";
+    o += "},\"alerts\":[";
+    for (std::size_t i = 0; i < s.alerts.size(); ++i) {
+        const Alert& a = s.alerts[i];
+        if (i) o += ',';
+        o += "{\"metric\":\"";
+        o += to_string(a.metric);
+        o += "\",\"severity\":\"";
+        o += to_string(a.severity);
+        o += "\",\"side\":\"";
+        o += a.low_side ? "low" : "high";
+        o += "\",\"value\":" + fixed2(a.value);
+        o += ",\"since_ms\":" + std::to_string(a.since_ms) + '}';
+    }
+    o += "],\"samples\":[";
     for (std::size_t i = 0; i < s.samples.size(); ++i) {
         const Telemetry& t = s.samples[i];
         if (i) o += ',';

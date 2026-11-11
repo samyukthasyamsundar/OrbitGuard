@@ -107,3 +107,39 @@ TEST(TelemetryStore, ConcurrentWriterAndReaders) {
     for (auto& t : readers) t.join();
     EXPECT_EQ(s.snapshot(0).stats.valid, 20000u);
 }
+
+TEST(TelemetryStore, RaisesAlertsFromChartedSamples) {
+    TelemetryStore s;
+    Telemetry t = make(0, 100);
+    t.battery_pct = 15;
+    s.ingest(t, 0);
+    auto snap = s.snapshot(10);
+    ASSERT_EQ(snap.alerts.size(), 1u);
+    EXPECT_EQ(snap.alerts[0].severity, Severity::Critical);
+    EXPECT_EQ(snap.stats.alerts_raised, 1u);
+}
+
+TEST(TelemetryStore, DuplicateOrLatePacketsCannotChangeAlerts) {
+    TelemetryStore s;
+    Telemetry bad = make(5, 500);
+    bad.battery_pct = 10;
+    s.ingest(bad, 0);
+    ASSERT_EQ(s.snapshot(0).alerts.size(), 1u);
+
+    Telemetry stale = make(5, 500);   // duplicate of the same packet, now carrying a healthy value
+    stale.battery_pct = 90;
+    s.ingest(stale, 0);
+    EXPECT_EQ(s.snapshot(0).alerts.size(), 1u);   // a repeated packet must not clear the alert
+
+    Telemetry late = make(3, 300);    // older packet arriving late
+    late.battery_pct = 90;
+    s.ingest(late, 0);
+    EXPECT_EQ(s.snapshot(0).alerts.size(), 1u);
+}
+
+TEST(TelemetryStore, NoAlertsOnNominalData) {
+    TelemetryStore s;
+    for (std::uint32_t i = 0; i < 20; ++i) s.ingest(make(i, 100 + i), 0);
+    EXPECT_TRUE(s.snapshot(0).alerts.empty());
+    EXPECT_EQ(s.snapshot(0).stats.alerts_raised, 0u);
+}

@@ -10,6 +10,7 @@ option(ORBITGUARD_BUILD_TESTS "Build unit tests (fetches GoogleTest)" ON)
 option(ORBITGUARD_WERROR "Treat warnings as errors" ON)
 
 add_library(orbitguard_core
+    src/alerts.cpp
     src/crc16.cpp
     src/packet_codec.cpp
     src/dashboard_routes.cpp
@@ -50,6 +51,7 @@ if(ORBITGUARD_BUILD_TESTS)
     FetchContent_MakeAvailable(googletest)
 
     add_executable(orbitguard_tests
+        tests/test_alerts.cpp
         tests/test_crc16.cpp
         tests/test_byte_io.cpp
         tests/test_packet_codec.cpp
