@@ -4,6 +4,7 @@
 // struct padding, compiler, and host endianness.
 #include <cstddef>
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 namespace orbitguard {

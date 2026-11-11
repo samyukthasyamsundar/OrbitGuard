@@ -1,5 +1,7 @@
 # OrbitGuard
 
+[![CI](https://github.com/samyukthasyamsundar/OrbitGuard/actions/workflows/ci.yml/badge.svg)](https://github.com/samyukthasyamsundar/OrbitGuard/actions/workflows/ci.yml)
+
 A satellite telemetry simulation written in C++17. A **satellite simulator** streams
 telemetry over UDP to a separate **ground station** receiver on localhost. The point of
 the project is the engineering around the link: an explicit wire protocol, validation,

@@ -1,7 +1,9 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
+#include <string>
 
 #include "orbitguard/crc16.hpp"
 #include "orbitguard/packet_codec.hpp"
