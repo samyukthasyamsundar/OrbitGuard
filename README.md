@@ -7,7 +7,9 @@ telemetry over UDP to a separate **ground station** receiver on localhost. The p
 the project is the engineering around the link: an explicit wire protocol, validation,
 and failure handling.
 
-**Status: Phase 1.** Simulator, ground station, protocol, tests. The dashboard is not implemented yet.
+**Status: Phase 2.** Simulator, ground station, protocol, tests, and a live web dashboard.
+
+![OrbitGuard dashboard](docs/dashboard.png)
 
 ## Build and test
 
@@ -38,7 +40,8 @@ Use two terminals (start the ground station first):
 ./build/satellite_sim  --port 5000 --rate-hz 2
 ```
 
-Both accept `--help`. The simulator takes `--count N` and `--seed N` (reproducible
+Then open http://127.0.0.1:8080/ for the live dashboard (`--http-port N` changes the
+port, `--no-dashboard` turns it off). Both programs accept `--help`. The simulator takes `--count N` and `--seed N` (reproducible
 telemetry); the ground station takes `--max-packets N` and `--idle-timeout-s N` so it can
 be scripted. Ctrl-C stops either one cleanly, and the ground station prints a summary
 (valid, rejected, lost, duplicate and out-of-order counts).
@@ -84,7 +87,10 @@ The rejected datagram is reported on stderr: `rejected packet (7 bytes): packet 
 | `packet_codec.*` | Wire format, `serialize`, `deserialize`, `CodecError` |
 | `telemetry_generator.*` | Seeded orbit/eclipse model that produces samples |
 | `sequence_tracker.*` | Loss, duplicate and reorder accounting (wrap-safe) |
-| `udp_socket.*` | RAII POSIX UDP wrapper (the only platform-specific code) |
+| `telemetry_store.*` | Thread-safe sample history and link counters shared by the receiver and the web server |
+| `http_server.*`, `dashboard_routes.*`, `snapshot_json.*` | Minimal read-only localhost HTTP server, its routes, and the JSON API |
+| `web/dashboard.html` | The dashboard: one self-contained page, embedded into the binary at build time |
+| `udp_socket.*` | RAII POSIX UDP wrapper (with the HTTP server, the only platform-specific code) |
 | `apps/` | `satellite_sim` and `ground_station` executables (thin `main`s) |
 | `tests/` | GoogleTest unit and loopback integration tests |
 
@@ -139,15 +145,39 @@ dashboard can reuse it unchanged.
 - **Strict warnings.** `-Wall -Wextra -Wpedantic -Wconversion -Werror` (disable with
   `-DORBITGUARD_WERROR=OFF` if a new compiler adds warnings).
 
-## Known limitations (Phase 1)
+## Dashboard decisions
+
+- **Embedded, dependency-free.** The page is a single HTML file compiled into
+  `ground_station`, with no CDN, fonts or JS libraries, so it works offline and the binary
+  does not depend on the working directory.
+- **Polling JSON, not WebSockets.** The browser polls `GET /api/telemetry` once a second.
+  It is simple, stateless, and trivially testable with `curl`; telemetry at 1 Hz does not
+  need a push channel.
+- **Localhost-only and read-only.** The server binds `127.0.0.1`, serves only `GET`/`HEAD`
+  on three fixed routes (it never opens files, so there is no path traversal), caps the
+  request head at 8 KiB, times out slow clients, and rejects any `Host` header that is not
+  this server (DNS-rebinding defence). It sends a strict Content-Security-Policy and no
+  CORS headers.
+- **One writer, many readers.** The UDP loop writes into `TelemetryStore` under a mutex;
+  HTTP threads only copy snapshots out. The suite also runs clean under ThreadSanitizer.
+- **Restart-aware sequence tracking.** The sender timestamp tells a late packet from a
+  restarted sender, so restarting `satellite_sim` is reported as a restart, not as
+  thousands of lost packets.
+- **Honest charting.** One chart per metric, since the units differ, so no dual axes.
+  Status is shown with an icon and a label, never color alone. Every chart has hover and
+  keyboard (arrow key) readouts and a table-view twin, and the page supports dark mode.
+
+## Known limitations
 
 - Loopback only, IPv4, single sender. The ground station does not authenticate the sender;
   the CRC detects corruption, not tampering.
-- The ground station trusts the first sequence number it sees as the baseline, and a
-  sender restart looks like an out-of-order burst rather than a reset.
+- Restart detection assumes the sender timestamp does not go backwards within a session
+  (a wall-clock step would look like out-of-order packets until it catches up).
 - The tracker counts a gap as loss immediately, so a late-arriving packet is counted as
   both lost and out-of-order.
 - No Windows support (POSIX sockets).
+- The dashboard keeps the latest 600 samples in memory only; there is no persistence.
+- The dashboard has no authentication; it relies on being bound to localhost.
 
 ## License
 

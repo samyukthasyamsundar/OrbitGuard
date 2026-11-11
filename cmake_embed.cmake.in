@@ -1,0 +1,5 @@
+// Generated from web/dashboard.html by CMake. Do not edit.
+#pragma once
+namespace orbitguard {
+inline constexpr const char* kDashboardHtml = R"OGHTML(@DASHBOARD_HTML@)OGHTML";
+}  // namespace orbitguard

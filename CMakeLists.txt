@@ -12,10 +12,21 @@ option(ORBITGUARD_WERROR "Treat warnings as errors" ON)
 add_library(orbitguard_core
     src/crc16.cpp
     src/packet_codec.cpp
+    src/dashboard_routes.cpp
+    src/http_server.cpp
     src/sequence_tracker.cpp
+    src/snapshot_json.cpp
     src/telemetry_generator.cpp
+    src/telemetry_store.cpp
     src/udp_socket.cpp)
-target_include_directories(orbitguard_core PUBLIC include)
+
+# Embed web/dashboard.html into the binary so it never depends on the working directory.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS web/dashboard.html)
+file(READ web/dashboard.html DASHBOARD_HTML)
+configure_file(cmake_embed.cmake.in ${CMAKE_BINARY_DIR}/generated/orbitguard/dashboard_html.hpp @ONLY)
+target_include_directories(orbitguard_core PUBLIC include ${CMAKE_BINARY_DIR}/generated)
+find_package(Threads REQUIRED)
+target_link_libraries(orbitguard_core PUBLIC Threads::Threads)
 target_compile_options(orbitguard_core PUBLIC -Wall -Wextra -Wpedantic -Wconversion)
 if(ORBITGUARD_WERROR)
     target_compile_options(orbitguard_core PUBLIC -Werror)
@@ -43,6 +54,9 @@ if(ORBITGUARD_BUILD_TESTS)
         tests/test_packet_codec.cpp
         tests/test_sequence_tracker.cpp
         tests/test_telemetry_generator.cpp
+        tests/test_telemetry_store.cpp
+        tests/test_snapshot_json.cpp
+        tests/test_http_server.cpp
         tests/test_udp_loopback.cpp)
     target_link_libraries(orbitguard_tests PRIVATE orbitguard_core GTest::gtest_main)
     include(GoogleTest)

@@ -1,11 +1,15 @@
-// OrbitGuard ground station: receives, validates and logs telemetry over UDP.
+// OrbitGuard ground station: receives, validates and logs telemetry over UDP,
+// and serves a live web dashboard on localhost.
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
+#include "orbitguard/dashboard_routes.hpp"
+#include "orbitguard/dashboard_html.hpp"
 #include "orbitguard/packet_codec.hpp"
-#include "orbitguard/sequence_tracker.hpp"
+#include "orbitguard/telemetry_store.hpp"
+#include "orbitguard/time_util.hpp"
 #include "orbitguard/udp_socket.hpp"
 
 using namespace orbitguard;
@@ -16,8 +20,10 @@ void on_signal(int) { g_stop = 1; }
 
 void usage(const char* prog) {
     std::fprintf(stderr,
-        "Usage: %s [--port N] [--max-packets N] [--idle-timeout-s N]\n"
+        "Usage: %s [--port N] [--http-port N] [--no-dashboard] [--max-packets N] [--idle-timeout-s N]\n"
         "  --port N            UDP port to listen on, localhost only (default 5000)\n"
+        "  --http-port N       dashboard HTTP port, localhost only (default 8080)\n"
+        "  --no-dashboard      do not start the web dashboard\n"
         "  --max-packets N     exit after N valid packets (default 0 = unlimited)\n"
         "  --idle-timeout-s N  exit if nothing arrives for N seconds (default 0 = never)\n", prog);
 }
@@ -29,16 +35,19 @@ bool parse_num(const char* s, double& out) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    double port = 5000, max_packets = 0, idle_s = 0;
+    double port = 5000, http_port = 8080, max_packets = 0, idle_s = 0;
+    bool dashboard = true;
     for (int i = 1; i < argc; ++i) {
+        if (!std::strcmp(argv[i], "--help")) { usage(argv[0]); return 0; }
+        if (!std::strcmp(argv[i], "--no-dashboard")) { dashboard = false; continue; }
         double* target = nullptr;
         if (!std::strcmp(argv[i], "--port")) target = &port;
+        else if (!std::strcmp(argv[i], "--http-port")) target = &http_port;
         else if (!std::strcmp(argv[i], "--max-packets")) target = &max_packets;
         else if (!std::strcmp(argv[i], "--idle-timeout-s")) target = &idle_s;
-        else if (!std::strcmp(argv[i], "--help")) { usage(argv[0]); return 0; }
         if (!target || i + 1 >= argc || !parse_num(argv[++i], *target)) { usage(argv[0]); return 2; }
     }
-    if (port < 0 || port > 65535 || max_packets < 0 || idle_s < 0) {
+    if (port < 0 || port > 65535 || http_port < 0 || http_port > 65535 || max_packets < 0 || idle_s < 0) {
         std::fprintf(stderr, "error: argument out of range\n");
         usage(argv[0]);
         return 2;
@@ -49,11 +58,18 @@ int main(int argc, char** argv) {
 
     auto sock = UdpSocket::bind_loopback(static_cast<std::uint16_t>(port));
     if (!sock) { std::fprintf(stderr, "error: %s\n", sock.error().message.c_str()); return 1; }
-    std::printf("ground_station: listening on 127.0.0.1:%u\n", sock.value().local_port());
+    std::printf("ground_station: listening for telemetry on udp 127.0.0.1:%u\n", sock.value().local_port());
+
+    TelemetryStore store;
+    HttpServer http;
+    if (dashboard) {
+        auto started = http.start(static_cast<std::uint16_t>(http_port), make_dashboard_handler(store, kDashboardHtml));
+        if (!started) { std::fprintf(stderr, "error: %s\n", started.error().message.c_str()); return 1; }
+        std::printf("ground_station: dashboard at http://127.0.0.1:%u/\n", http.port());
+    }
     std::fflush(stdout);
 
-    SequenceTracker tracker;
-    unsigned long long rejected = 0, valid = 0;
+    unsigned long long valid = 0;
     int idle_ms = 0;
     constexpr int kPollMs = 250;  // short poll so Ctrl-C is handled promptly
 
@@ -69,25 +85,29 @@ int main(int argc, char** argv) {
 
         auto pkt = deserialize(rx.value().data);
         if (!pkt) {
-            ++rejected;
+            store.reject();
             std::fprintf(stderr, "rejected packet (%zu bytes): %s\n", rx.value().data.size(), to_string(pkt.error()));
             continue;  // a bad packet must never stop the receiver
         }
         ++valid;
         const Telemetry& t = pkt.value();
-        const SequenceStatus st = tracker.observe(t.sequence);
+        const SequenceStatus st = store.ingest(t, unix_time_ms());
         const char* note = st == SequenceStatus::Gap ? " [GAP]" : st == SequenceStatus::Duplicate ? " [DUP]"
-                         : st == SequenceStatus::OutOfOrder ? " [OUT-OF-ORDER]" : "";
+                         : st == SequenceStatus::OutOfOrder ? " [OUT-OF-ORDER]"
+                         : st == SequenceStatus::Restart ? " [SENDER RESTART]" : "";
         std::printf("recv seq=%u ts=%llu batt=%.2f%% temp=%.2fC cpu=%.2f%% sig=%.2fdBm%s\n",
                     t.sequence, static_cast<unsigned long long>(t.timestamp_ms),
                     t.battery_pct, t.temperature_c, t.cpu_pct, t.signal_dbm, note);
         std::fflush(stdout);
     }
 
-    std::printf("summary: valid=%llu rejected=%llu lost=%llu duplicates=%llu out_of_order=%llu\n",
-                valid, rejected,
-                static_cast<unsigned long long>(tracker.lost()),
-                static_cast<unsigned long long>(tracker.duplicates()),
-                static_cast<unsigned long long>(tracker.out_of_order()));
+    const Snapshot snap = store.snapshot(0);
+    std::printf("summary: valid=%llu rejected=%llu lost=%llu duplicates=%llu out_of_order=%llu restarts=%llu\n",
+                static_cast<unsigned long long>(snap.stats.valid),
+                static_cast<unsigned long long>(snap.stats.rejected),
+                static_cast<unsigned long long>(snap.stats.lost),
+                static_cast<unsigned long long>(snap.stats.duplicates),
+                static_cast<unsigned long long>(snap.stats.out_of_order),
+                static_cast<unsigned long long>(snap.stats.restarts));
     return 0;
 }
