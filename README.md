@@ -43,6 +43,37 @@ telemetry); the ground station takes `--max-packets N` and `--idle-timeout-s N` 
 be scripted. Ctrl-C stops either one cleanly, and the ground station prints a summary
 (valid, rejected, lost, duplicate and out-of-order counts).
 
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph SAT[satellite_sim]
+        GEN[TelemetryGenerator] --> ENC[serialize + CRC-16]
+    end
+    subgraph GS[ground_station]
+        DEC[deserialize: header, length, CRC, ranges] --> SEQ[SequenceTracker] --> LOG[log + summary]
+    end
+    ENC -- "UDP 127.0.0.1 (28-byte packets)" --> DEC
+    CORE[(orbitguard_core)] -.-> SAT
+    CORE -.-> GS
+```
+
+## Sample output
+
+Ground station, after a garbage datagram and five telemetry packets:
+
+```
+ground_station: listening on 127.0.0.1:5055
+recv seq=0 ts=1794330788295 batt=95.04% temp=20.81C cpu=26.59% sig=-95.83dBm
+recv seq=1 ts=1794330788346 batt=95.07% temp=20.00C cpu=24.71% sig=-96.37dBm
+recv seq=2 ts=1794330788398 batt=95.11% temp=20.29C cpu=22.34% sig=-94.41dBm
+recv seq=3 ts=1794330788450 batt=95.14% temp=20.44C cpu=23.88% sig=-94.96dBm
+recv seq=4 ts=1794330788498 batt=95.18% temp=20.60C cpu=22.90% sig=-94.66dBm
+summary: valid=5 rejected=1 lost=0 duplicates=0 out_of_order=0
+```
+
+The rejected datagram is reported on stderr: `rejected packet (7 bytes): packet too short`.
+
 ## Layout
 
 | Path | Responsibility |
@@ -117,3 +148,7 @@ dashboard can reuse it unchanged.
 - The tracker counts a gap as loss immediately, so a late-arriving packet is counted as
   both lost and out-of-order.
 - No Windows support (POSIX sockets).
+
+## License
+
+MIT, see [LICENSE](LICENSE).
