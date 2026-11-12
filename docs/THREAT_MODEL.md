@@ -104,3 +104,28 @@ because a genuine packet cannot be told apart from a forgery until its tag is ch
 budget is empty genuine packets are refused too. It trades availability for CPU, which is the
 wrong trade when the goal is to keep receiving telemetry, so it is opt-in. It may suit a
 CPU-constrained ground station where being slow is worse than being briefly deaf.
+
+## The dashboard in `--lan` mode
+
+Off by default. With `--lan` the dashboard listens on the network, which changes who can reach it.
+
+| Threat | Mitigation | Evidence |
+|--------|------------|----------|
+| A device on the network opens the dashboard | A random 128-bit link is required; every request without it gets the same bare 403 | `TokenFixture.*`, checked from the network address with `curl` and a browser |
+| Guessing the link | 2^128 possibilities; compared in constant time; a wrong and a missing token are indistinguishable | `Token.*`, `TokenFixture.WrongTokenGetsTheSameResponseAsNoToken` |
+| An empty token configured by mistake accepting everything | An empty expected token never matches | `Token.AnEmptyExpectedTokenNeverMatchesAnything` |
+| Slow client stalls the server (slowloris) | Total request deadline, 4 worker threads, bounded queue | **reproduced before the fix** (one dribbling client made the dashboard unreachable for 8 s+); `SlowClients.*`; verified against the live server afterwards |
+| Secret left in browser history or on screen | The page removes it from the address bar and uses an `HttpOnly`, `SameSite=Strict` cookie | checked in a browser: `cookieVisibleToScript: false`, token absent from `location.href` |
+| Changing state through the dashboard | Only `GET` and `HEAD` are accepted | `TokenFixture.OtherMethodsAreStillRefused...` |
+
+**Not protected:**
+- **No encryption.** It is plain HTTP, so anyone able to watch the network sees the link and the data.
+  Use it only on a network you trust. HTTPS would be the fix and is not implemented.
+- **The link is a bearer secret.** Anyone who obtains it (a screenshot, a shared message) has access
+  until the ground station is restarted, which issues a new one.
+- **Heavy floods.** More than the worker count of simultaneous slow clients can still delay service
+  until the deadline (3 s) frees workers; the bounded queue stops it growing without limit but does not
+  make a determined attacker on the same network harmless.
+- **No per-client rate limiting** on the HTTP side.
+- **Managed networks.** On a work or school network, opening a listening port may be against policy or
+  blocked by a firewall.

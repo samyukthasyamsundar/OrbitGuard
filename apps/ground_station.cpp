@@ -36,6 +36,9 @@ void usage(const char* prog) {
         "  --key-id N          identifier for that key (default 1)\n"
         "  --record FILE       save every received datagram (valid or not) to a NEW file;\n"
         "                      refuses to overwrite. Replay with telemetry_replay\n"
+        "  --lan               let other devices on your network (e.g. a phone) open the dashboard. Off by\n"
+        "                      by default. Prints a one-time secret link; anyone with the link and network\n"
+        "                      access can view the dashboard, so only use it on a network you trust\n"
         "  --verify-budget     OPT-IN: cap the HMAC work forced by well-formed but badly signed packets\n"
         "                      (2000/s, burst 500). Saves CPU under a forgery flood but also refuses\n"
         "                      genuine packets while the budget is empty; see docs/THREAT_MODEL.md\n"
@@ -56,7 +59,7 @@ bool parse_num(const char* s, double& out) {
 
 int main(int argc, char** argv) {
     double port = 5000, http_port = 8080, max_packets = 0, idle_s = 0;
-    bool dashboard = true, verify_budget = false;
+    bool dashboard = true, verify_budget = false, lan = false;
     double map_scale = 0, map_rate = 0;   // both > 0 once --map is given   // off by default: it trades availability for CPU
     std::string record_path, key_path;
     double key_id = 1, recv_kb = 0;
@@ -74,6 +77,7 @@ int main(int argc, char** argv) {
         }
         if (!std::strcmp(argv[i], "--no-dashboard")) { dashboard = false; continue; }
         if (!std::strcmp(argv[i], "--verify-budget")) { verify_budget = true; continue; }
+        if (!std::strcmp(argv[i], "--lan")) { lan = true; continue; }
         if (!std::strcmp(argv[i], "--map")) {
             // "--map SCALE,RATE": both must be positive finite numbers.
             if (i + 1 >= argc) { usage(argv[0]); return 2; }
@@ -148,9 +152,33 @@ int main(int argc, char** argv) {
     }
     HttpServer http;
     if (dashboard) {
-        auto started = http.start(static_cast<std::uint16_t>(http_port), make_dashboard_handler(store, kDashboardHtml));
+        HttpServer::Options hopt;
+        std::string token;
+        if (lan) {
+            // A fresh random secret every run. If the system cannot supply randomness we refuse to open the
+            // network at all, rather than fall back to something guessable.
+            token = random_token_hex(16);
+            if (token.empty()) {
+                std::fprintf(stderr, "error: cannot generate a secure access token; refusing to open the dashboard to the network\n");
+                return 1;
+            }
+            hopt.allow_lan = true;
+            hopt.access_token = token;
+        }
+        auto started = http.start(static_cast<std::uint16_t>(http_port), make_dashboard_handler(store, kDashboardHtml), hopt);
         if (!started) { std::fprintf(stderr, "error: %s\n", started.error().message.c_str()); return 1; }
-        std::printf("ground_station: dashboard at http://127.0.0.1:%u/\n", http.port());
+        if (!lan) {
+            std::printf("ground_station: dashboard at http://127.0.0.1:%u/\n", http.port());
+        } else {
+            std::printf("ground_station: dashboard is OPEN TO YOUR NETWORK (port %u, secret link required)\n", http.port());
+            std::printf("  on this computer: http://127.0.0.1:%u/?k=%s\n", http.port(), token.c_str());
+            const auto addrs = local_ipv4_addresses();
+            if (addrs.empty()) std::printf("  (no network address found; connect to Wi-Fi to reach it from a phone)\n");
+            for (const auto& a : addrs)
+                std::printf("  on your phone (same network): http://%s:%u/?k=%s\n", a.c_str(), http.port(), token.c_str());
+            std::printf("  The link is a password: anyone who has it and is on your network can view the dashboard.\n");
+            std::printf("  It changes every time you start the ground station. Press Ctrl-C to close it.\n");
+        }
     }
     std::fflush(stdout);
 

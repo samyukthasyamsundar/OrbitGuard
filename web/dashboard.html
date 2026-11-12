@@ -4,6 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>OrbitGuard Ground Station</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icon.svg">
+<meta name="theme-color" content="#2a78d6">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="OrbitGuard">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='3' fill='%232a78d6'/%3E%3Ccircle cx='8' cy='8' r='6.5' fill='none' stroke='%232a78d6' stroke-width='1.5'/%3E%3C/svg%3E">
 <style>
 :root {
@@ -813,6 +819,13 @@ noscript { display: block; padding: 16px; }
 
   // ---------- init ----------
   (function init() {
+    try {
+      var u = new URL(window.location.href);
+      if (u.searchParams.has('k')) {
+        u.searchParams.delete('k');
+        window.history.replaceState(null, '', u.pathname + (u.search || '') + u.hash);
+      }
+    } catch (e) { /* an old browser without URL: leave the address bar alone */ }
     var charts = document.getElementById('charts');
     METRICS.forEach(function (m) { charts.appendChild(buildCard(m)); });
     buildTiles();

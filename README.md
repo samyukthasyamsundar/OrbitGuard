@@ -115,6 +115,41 @@ Other security work in the repo:
 > The SHA-256 and HMAC here are implemented from the standards and tested against the official
 > vectors, but they are a learning implementation. Use a vetted library for anything real.
 
+## On your phone
+
+By default the dashboard is reachable only from the computer running it. To open it on a phone on
+the same Wi-Fi, start the ground station with `--lan`:
+
+```sh
+./build/ground_station --port 5000 --map 300,5 --lan
+```
+
+It prints a link such as `http://192.168.1.20:8080/?k=3f9c...`. Open that on the phone. To make it
+an app, use **Add to Home Screen** (Safari: Share, then Add to Home Screen; Chrome: menu, then Install
+app). It opens full screen with its own icon. The Mac still has to be running the ground station; the
+phone is only a screen.
+
+**Be aware of what `--lan` does.** It opens a port on your network. Protections:
+- **A secret link is required.** It is a fresh random 128-bit value on every start, compared in
+  constant time. Without it, every request gets the same bare `403`.
+- **The page moves the secret out of the address bar** after loading and keeps it in an `HttpOnly`,
+  `SameSite=Strict` cookie that page scripts cannot read.
+- **The server cannot be stalled by slow clients.** A client that dribbles bytes could hold the old
+  single-threaded server forever (reproduced: one such client made the dashboard unreachable). The
+  whole request must now arrive within a fixed deadline, a small pool of worker threads serves
+  connections, and the queue is capped.
+- It is read-only: `GET` and `HEAD` only, no way to change anything.
+
+What it does **not** give you: the traffic is plain HTTP, so anyone who can watch your network can
+see the link and the data. **Only use `--lan` on a network you trust**, not on public Wi-Fi, and on a
+work or school network check that opening a port is allowed. Treat the link like a password. For use
+outside your home network you would need HTTPS, which this project does not provide.
+
+**Not a native app.** It is a web page that can be added to the home screen. There is deliberately
+no service worker or offline mode: that would cache live data and the secret link. iPhone prefers a
+PNG for the home-screen icon; this project serves an SVG, which I have not tested on a real iPhone,
+so the icon may appear as a screenshot of the page there.
+
 ## Satellite map
 
 Add `--map TIMESCALE,RATE` to the ground station (the same `--time-scale` and `--rate-hz` the
@@ -361,7 +396,8 @@ dashboard can reuse it unchanged.
 - Alert limits are compiled in; there is no config file or command-line override yet.
 - The dashboard JavaScript has no automated tests. It was checked by hand in a browser,
   and that found a real bug (the first metric's alerts were being dropped).
-- The dashboard has no authentication; it relies on being bound to localhost.
+- The dashboard has no login of its own: by default it relies on being bound to localhost, and in
+  `--lan` mode on a secret link over plain HTTP (no encryption).
 - Authentication has no confidentiality, no per-device identity and no rate limiting; see the threat model.
 - The counter is seeded from the wall clock; a satellite whose clock jumps backwards is refused.
 
