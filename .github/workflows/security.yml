@@ -1,0 +1,48 @@
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 4 * * 1"   # weekly, so newly published rules and advisories are applied
+
+# Least privilege: jobs get read access unless they declare more.
+permissions:
+  contents: read
+
+jobs:
+  codeql:
+    name: CodeQL
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write   # needed to upload results
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: c-cpp
+          build-mode: manual
+          queries: security-extended
+      - name: Build
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DORBITGUARD_BUILD_TESTS=OFF
+          cmake --build build -j
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:c-cpp"
+
+  static-analysis:
+    name: cppcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cppcheck
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cppcheck
+      - name: Analyze
+        # Fail on any warning/performance/portability finding in our own code (not googletest).
+        run: >
+          cppcheck --enable=warning,performance,portability --std=c++17
+          --error-exitcode=1 --inline-suppr --quiet
+          -I include src apps

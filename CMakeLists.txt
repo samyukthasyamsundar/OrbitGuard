@@ -32,6 +32,25 @@ target_include_directories(orbitguard_core PUBLIC include ${CMAKE_BINARY_DIR}/ge
 find_package(Threads REQUIRED)
 target_link_libraries(orbitguard_core PUBLIC Threads::Threads)
 target_compile_options(orbitguard_core PUBLIC -Wall -Wextra -Wpedantic -Wconversion)
+
+# Defensive hardening for builds that handle untrusted input. Each flag is only added if
+# the compiler accepts it, so older or unusual toolchains still configure.
+option(ORBITGUARD_SANITIZE "Set when building with sanitizers (disables FORTIFY_SOURCE)" OFF)
+option(ORBITGUARD_HARDEN "Enable compiler/linker hardening flags" ON)
+if(ORBITGUARD_HARDEN)
+    include(CheckCXXCompilerFlag)
+    set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+    foreach(flag -fstack-protector-strong -fno-delete-null-pointer-checks -fno-strict-overflow)
+        string(MAKE_C_IDENTIFIER "HAVE${flag}" var)
+        check_cxx_compiler_flag(${flag} ${var})
+        if(${var})
+            target_compile_options(orbitguard_core PUBLIC ${flag})
+        endif()
+    endforeach()
+    # _FORTIFY_SOURCE only takes effect with optimisation; define it only for those builds.
+    target_compile_definitions(orbitguard_core PUBLIC
+        $<$<AND:$<NOT:$<CONFIG:Debug>>,$<NOT:$<BOOL:${ORBITGUARD_SANITIZE}>>>:_FORTIFY_SOURCE=2>)
+endif()
 if(ORBITGUARD_WERROR)
     target_compile_options(orbitguard_core PUBLIC -Werror)
 endif()
@@ -50,6 +69,8 @@ if(ORBITGUARD_BUILD_TESTS)
     include(FetchContent)
     FetchContent_Declare(googletest
         URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip
+        # Pinned so a tampered or silently changed download fails the build (supply-chain check).
+        URL_HASH SHA256=1f357c27ca988c3f7c6b4bf68a9395005ac6761f034046e9dde0896e3aba00e4
         DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
     set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
     set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
