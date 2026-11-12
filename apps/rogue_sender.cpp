@@ -8,6 +8,8 @@
 //   tamper    a genuine signed packet with one field altered after signing
 //   replay    one captured genuine packet sent again and again
 //   flood     a burst of random datagrams
+//   hmacflood a burst of WELL-FORMED secure packets with bad tags: each one forces a full HMAC check,
+//             so this is the flood that targets the most expensive rejection path
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -25,7 +27,7 @@ using namespace orbitguard;
 namespace {
 void usage(const char* prog) {
     std::fprintf(stderr,
-        "Usage: %s --attack forge|wrongkey|tamper|replay|flood [--port N] [--count N]\n"
+        "Usage: %s --attack forge|wrongkey|tamper|replay|flood|hmacflood [--port N] [--count N]\n"
         "          [--key-file FILE] [--key-id N]\n"
         "  --attack A      which attack to run (required)\n"
         "  --port N        target ground station UDP port on localhost (default 5000)\n"
@@ -71,7 +73,7 @@ int main(int argc, char** argv) {
         usage(argv[0]);
         return 2;
     }
-    const bool known = attack == "forge" || attack == "wrongkey" || attack == "tamper" || attack == "replay" || attack == "flood";
+    const bool known = attack == "forge" || attack == "wrongkey" || attack == "tamper" || attack == "replay" || attack == "flood" || attack == "hmacflood";
     if (!known) { std::fprintf(stderr, "error: unknown or missing --attack\n"); usage(argv[0]); return 2; }
 
     Key real;
@@ -105,12 +107,15 @@ int main(int argc, char** argv) {
             pkt[18] = 0x00; pkt[19] = 0x64;                                         // battery -> 1.00% after signing
         } else if (attack == "replay") {
             pkt = captured;
+        } else if (attack == "hmacflood") {
+            Key bad{real.id, std::vector<std::uint8_t>(32, 0x42)};
+            pkt = seal(fake(static_cast<std::uint32_t>(i), 1.0), bad, (1ULL << 40) + static_cast<std::uint64_t>(i)).value();
         } else {  // flood
             pkt.resize(1 + rng() % 200);
             for (auto& b : pkt) b = static_cast<std::uint8_t>(rng());
         }
         if (sock.value().send_to_loopback(dst, pkt)) ++sent;
-        if (attack != "flood") std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        if (attack != "flood" && attack != "hmacflood") std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
     std::printf("rogue_sender: %s: sent %ld datagrams to 127.0.0.1:%d\n", attack.c_str(), sent, static_cast<int>(port));
     return 0;

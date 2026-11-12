@@ -86,6 +86,7 @@ if(ORBITGUARD_BUILD_TESTS)
         tests/test_crc16.cpp
         tests/test_byte_io.cpp
         tests/test_packet_codec.cpp
+        tests/test_rate_limiter.cpp
         tests/test_recording.cpp
         tests/test_replay.cpp
         tests/test_secure_packet.cpp

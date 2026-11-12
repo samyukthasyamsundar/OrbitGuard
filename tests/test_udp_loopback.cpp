@@ -1,6 +1,8 @@
 // Integration tests: real UDP sockets on 127.0.0.1 using OS-assigned ports.
 #include <gtest/gtest.h>
 
+#include <chrono>
+
 #include "orbitguard/packet_codec.hpp"
 #include "orbitguard/udp_socket.hpp"
 
@@ -68,4 +70,48 @@ TEST(UdpLoopback, BindingSamePortTwiceFails) {
     ASSERT_TRUE(a.ok());
     auto b = UdpSocket::bind_loopback(a.value().local_port());
     EXPECT_FALSE(b.ok());
+}
+
+TEST(UdpLoopback, EmptyDatagramIsDeliveredNotMistakenForATimeout) {
+    auto rx = UdpSocket::bind_loopback(0);
+    auto tx = UdpSocket::create();
+    ASSERT_TRUE(rx.ok() && tx.ok());
+    ASSERT_TRUE(tx.value().send_to_loopback(rx.value().local_port(), {}).ok());
+    auto got = rx.value().receive(2000);
+    ASSERT_TRUE(got.ok());
+    EXPECT_FALSE(got.value().timed_out);
+    EXPECT_TRUE(got.value().data.empty());
+}
+
+TEST(UdpLoopback, IdleReceiveStillWaitsForRoughlyTheTimeout) {
+    auto rx = UdpSocket::bind_loopback(0);
+    ASSERT_TRUE(rx.ok());
+    const auto t0 = std::chrono::steady_clock::now();
+    auto got = rx.value().receive(150);
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    ASSERT_TRUE(got.ok());
+    EXPECT_TRUE(got.value().timed_out);
+    EXPECT_GE(ms, 140.0);    // it really waited (not a busy return)...
+    EXPECT_LT(ms, 1500.0);   // ...and not forever
+}
+
+TEST(UdpLoopback, BackToBackDatagramsAreAllDeliveredInOrder) {
+    auto rx = UdpSocket::bind_loopback(0, 1 << 20);
+    auto tx = UdpSocket::create();
+    ASSERT_TRUE(rx.ok() && tx.ok());
+    for (std::uint8_t i = 0; i < 50; ++i) ASSERT_TRUE(tx.value().send_to_loopback(rx.value().local_port(), {i, 0xAB}).ok());
+    for (std::uint8_t i = 0; i < 50; ++i) {
+        auto got = rx.value().receive(2000);
+        ASSERT_TRUE(got.ok());
+        ASSERT_FALSE(got.value().timed_out) << i;
+        EXPECT_EQ(got.value().data[0], i);
+    }
+}
+
+TEST(UdpLoopback, RequestedReceiveBufferIsReportedBack) {
+    auto def = UdpSocket::bind_loopback(0);
+    auto big = UdpSocket::bind_loopback(0, 4 << 20);
+    ASSERT_TRUE(def.ok() && big.ok());
+    EXPECT_GT(def.value().receive_buffer_bytes(), 0);
+    EXPECT_GE(big.value().receive_buffer_bytes(), def.value().receive_buffer_bytes());
 }

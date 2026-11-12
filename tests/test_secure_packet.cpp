@@ -261,6 +261,82 @@ TEST(KeyRing, OneAuthenticPacketWithAHugeCounterCannotLockOutTheRealSender) {
     }
 }
 
+namespace {
+// Well-formed secure packet, right key id, but signed with the wrong key: forces a full HMAC to reject.
+std::vector<std::uint8_t> badly_signed(std::uint64_t counter) { return sealed(counter, make_key(1, 0x00)); }
+}  // namespace
+
+TEST(KeyRing, VerificationBudgetCapsTheHmacWorkFailuresCanForce) {
+    KeyRing ring;
+    ring.add(make_key(1, 0xA5));
+    ring.set_verification_budget(10, 20);                      // 10 failures/s, burst of 20
+    int bad_tag = 0, limited = 0;
+    for (int i = 0; i < 1000; ++i) {                           // 1000 forgeries inside one millisecond
+        auto p = badly_signed(static_cast<std::uint64_t>(i));
+        auto r = ring.receive(p.data(), p.size(), 5000);
+        ASSERT_FALSE(r.ok());
+        (r.error() == SecureError::BadTag ? bad_tag : limited)++;
+    }
+    EXPECT_EQ(bad_tag, 20);                                    // only the burst was verified
+    EXPECT_EQ(limited, 980);                                   // the rest were refused without an HMAC
+    EXPECT_EQ(ring.budget_refusals(), 980u);
+}
+
+TEST(KeyRing, AuthenticTrafficNeverDrawsDownTheBudget) {
+    KeyRing ring;
+    ring.add(make_key(1, 0xA5));
+    ring.set_verification_budget(1, 3);                        // tiny budget: easy to exhaust if it leaked
+    for (std::uint64_t c = 1; c <= 500; ++c) {
+        auto p = sealed(c);
+        ASSERT_TRUE(ring.receive(p.data(), p.size(), 7000).ok()) << c;   // all at the same instant
+    }
+    EXPECT_EQ(ring.budget_refusals(), 0u);
+}
+
+TEST(KeyRing, WhileTheBudgetIsEmptyGenuinePacketsAreAlsoRefusedThenRecover) {
+    KeyRing ring;
+    ring.add(make_key(1, 0xA5));
+    ring.set_verification_budget(1, 2);
+    for (int i = 0; i < 200; ++i) { auto p = badly_signed(static_cast<std::uint64_t>(i)); ring.receive(p.data(), p.size(), 9000); }
+    // The budget is now empty. A genuine packet is indistinguishable from a forgery until its tag is
+    // checked, so it needs a token too. This is the price of the defence: it trades availability for
+    // bounded CPU while an attack is in progress, and recovers once the attack stops.
+    auto genuine = sealed(1);
+    auto r = ring.receive(genuine.data(), genuine.size(), 9000);
+    EXPECT_FALSE(r.ok());
+    EXPECT_EQ(r.error(), SecureError::RateLimited);
+    auto later = ring.receive(genuine.data(), genuine.size(), 9000 + 5000);   // five seconds later: refilled
+    EXPECT_TRUE(later.ok());
+}
+
+TEST(KeyRing, BudgetRefillsSoAttackStoppingRestoresNormalService) {
+    KeyRing ring;
+    ring.add(make_key(1, 0xA5));
+    ring.set_verification_budget(100, 5);
+    for (int i = 0; i < 50; ++i) { auto p = badly_signed(static_cast<std::uint64_t>(i)); ring.receive(p.data(), p.size(), 0); }
+    auto p = sealed(1000);
+    EXPECT_EQ(ring.receive(p.data(), p.size(), 0).error(), SecureError::RateLimited);
+    EXPECT_TRUE(ring.receive(p.data(), p.size(), 100).ok());   // 100 ms at 100/s refills enough
+}
+
+TEST(KeyRing, JunkThatCannotReachTheHmacIsNeverBudgeted) {
+    KeyRing ring;
+    ring.add(make_key(1, 0xA5));
+    ring.set_verification_budget(1, 1);
+    std::vector<std::uint8_t> junk(53, 0x77);                  // right size, wrong magic: free to reject
+    for (int i = 0; i < 100; ++i) EXPECT_NE(ring.receive(junk.data(), junk.size(), 0).error(), SecureError::RateLimited);
+    EXPECT_EQ(ring.budget_refusals(), 0u);
+}
+
+TEST(KeyRing, WithoutABudgetNothingIsRateLimited) {
+    KeyRing ring;
+    ring.add(make_key(1, 0xA5));
+    for (int i = 0; i < 300; ++i) {
+        auto p = badly_signed(static_cast<std::uint64_t>(i));
+        EXPECT_EQ(ring.receive(p.data(), p.size(), 0).error(), SecureError::BadTag);
+    }
+}
+
 TEST(KeyRing, EmptyRingRejectsEverything) {
     KeyRing ring;
     auto p = sealed(1);

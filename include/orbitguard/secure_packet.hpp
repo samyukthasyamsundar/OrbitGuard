@@ -21,10 +21,12 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "orbitguard/packet_codec.hpp"
+#include "orbitguard/rate_limiter.hpp"
 #include "orbitguard/result.hpp"
 
 namespace orbitguard {
@@ -43,6 +45,7 @@ enum class SecureError {
     TooOld,           // counter is older than the replay window
     TooFarAhead,      // counter jumps implausibly far ahead (refused so it cannot lock out the real sender)
     Malformed,        // authenticated, but the inner telemetry is invalid
+    RateLimited,      // refused before verification: too many unverifiable packets recently
     InvalidKey        // encode only: key too short
 };
 const char* to_string(SecureError e);
@@ -102,9 +105,18 @@ public:
     bool empty() const { return keys_.empty(); }
 
     // Verify the tag, then check and record the counter. The window moves only on success.
-    Result<Opened, SecureError> receive(const std::uint8_t* data, std::size_t size);
+    // `now_ms` is only used for the verification budget (see set_verification_budget).
+    Result<Opened, SecureError> receive(const std::uint8_t* data, std::size_t size, std::uint64_t now_ms = 0);
+
+    // Bound the CPU spent on packets that look genuine but fail verification. Each well-formed
+    // secure packet draws one token BEFORE the HMAC is computed and gets it back if it verifies, so
+    // authentic traffic never consumes the budget; only failures do. When the budget is empty, such
+    // packets are refused without computing an HMAC (RateLimited). Off by default.
+    void set_verification_budget(double failures_per_second, double burst) { budget_.emplace(failures_per_second, burst); }
+    std::uint64_t budget_refusals() const { return budget_ ? budget_->refused() : 0; }
 
 private:
+    std::optional<RateLimiter> budget_;
     std::vector<Key> keys_;
     std::vector<ReplayWindow> windows_;
 };

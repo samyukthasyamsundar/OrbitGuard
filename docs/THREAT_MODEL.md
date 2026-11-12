@@ -45,9 +45,9 @@ station. If either end is compromised, none of this holds.
   station restarts. Reproduced in testing. Closing it needs state outside the protocol, such
   as a persisted counter or a trusted clock. Note the attacker needs a *genuinely signed* packet,
   so this requires either the key or a faulty real sender.
-- **Denial of service.** A flood cannot make the receiver accept anything, but it can still
-  consume CPU and fill the UDP buffer, causing real packets to be dropped. There is no rate
-  limiting yet.
+- **Denial of service.** A flood cannot make the receiver *accept* anything, but it can stop the
+  real satellite getting through. This was measured, not assumed (see "Denial-of-service
+  measurements" below), and it is **not solved**. It cannot be solved inside the receiving program.
 - **Traffic analysis.** Packet timing and size are visible.
 - **Clock-derived counter.** The simulator seeds its counter from wall-clock time so it keeps
   rising across restarts. A satellite whose clock jumps backwards would reuse low values and
@@ -70,3 +70,37 @@ The security tests were validated by mutation: the code was deliberately broken 
 (tag check removed, tag half-checked, tag not covering the counter, window advancing before
 authentication, window off by one) and each was caught by at least one test. One earlier gap
 was found this way (an HMAC key-length boundary) and closed with a new test.
+
+## Denial-of-service measurements
+
+Setup: an authenticated ground station on loopback, a real satellite sending 600 packets at
+200/s, and four `rogue_sender` flood processes at once. Figures are packets of the real
+satellite's 600 that were delivered; there was large run-to-run variation (about +/-30), so treat
+them as ranges.
+
+| Change | Honest packets delivered | Verdict |
+|--------|--------------------------|---------|
+| Baseline (random-byte flood) | about 270-290 of 600 | the problem |
+| Remove per-packet logging | about the same | logging was **not** the bottleneck |
+| Larger UDP receive buffer (`--recv-buffer-kb`, up to 8 MiB) | about 310-360 | helps bursts, small gain under a sustained flood |
+| Cheaper read path (read first, `poll` only when empty; no per-packet heap allocation) | about 300-340 | small gain, kept |
+
+Why it cannot be fixed in the receiver: the flood arrives faster than a single reader can drain
+the socket, and the kernel discards the overflow *before* the program sees it, without regard to
+who sent it. Real mitigations live outside this program: network-level filtering, per-source
+limits at a firewall or router, or a separate authenticated channel. On loopback every sender
+looks like 127.0.0.1, so per-source throttling cannot even be tested here.
+
+**Cost of rejecting a packet** (measured in isolation, ns per packet): random bytes cost about 4,
+because the size and magic checks fail first; a *well-formed* secure packet with a bad tag costs
+about 640, because it forces a full HMAC. So an attacker who knows the format can aim at the
+expensive path (`rogue_sender --attack hmacflood`).
+
+**The optional verification budget (`--verify-budget`, off by default).** Caps how many
+well-formed-but-badly-signed packets get an HMAC check per second (2000/s, burst 500). Against
+the `hmacflood` attack it cut the station's CPU use from about 99% to about 65% and refused more
+junk. But it **delivered fewer genuine packets** (5 of 300, against 78 without it in that run),
+because a genuine packet cannot be told apart from a forgery until its tag is checked, so while the
+budget is empty genuine packets are refused too. It trades availability for CPU, which is the
+wrong trade when the goal is to keep receiving telemetry, so it is opt-in. It may suit a
+CPU-constrained ground station where being slow is worse than being briefly deaf.

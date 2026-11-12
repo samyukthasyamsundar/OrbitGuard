@@ -35,6 +35,11 @@ void usage(const char* prog) {
         "  --key-id N          identifier for that key (default 1)\n"
         "  --record FILE       save every received datagram (valid or not) to a NEW file;\n"
         "                      refuses to overwrite. Replay with telemetry_replay\n"
+        "  --verify-budget     OPT-IN: cap the HMAC work forced by well-formed but badly signed packets\n"
+        "                      (2000/s, burst 500). Saves CPU under a forgery flood but also refuses\n"
+        "                      genuine packets while the budget is empty; see docs/THREAT_MODEL.md\n"
+        "  --recv-buffer-kb N  ask the OS for a UDP receive buffer of N KiB so a burst queues instead of\n"
+        "                      being dropped (default: OS default)\n"
         "  --max-packets N     exit after N valid packets (default 0 = unlimited)\n"
         "  --idle-timeout-s N  exit if nothing arrives for N seconds (default 0 = never)\n", prog);
 }
@@ -47,9 +52,9 @@ bool parse_num(const char* s, double& out) {
 
 int main(int argc, char** argv) {
     double port = 5000, http_port = 8080, max_packets = 0, idle_s = 0;
-    bool dashboard = true;
+    bool dashboard = true, verify_budget = false;   // off by default: it trades availability for CPU
     std::string record_path, key_path;
-    double key_id = 1;
+    double key_id = 1, recv_kb = 0;
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--key-file")) {
             if (i + 1 >= argc) { usage(argv[0]); return 2; }
@@ -63,12 +68,14 @@ int main(int argc, char** argv) {
             continue;
         }
         if (!std::strcmp(argv[i], "--no-dashboard")) { dashboard = false; continue; }
+        if (!std::strcmp(argv[i], "--verify-budget")) { verify_budget = true; continue; }
         double* target = nullptr;
         if (!std::strcmp(argv[i], "--port")) target = &port;
         else if (!std::strcmp(argv[i], "--http-port")) target = &http_port;
         else if (!std::strcmp(argv[i], "--max-packets")) target = &max_packets;
         else if (!std::strcmp(argv[i], "--idle-timeout-s")) target = &idle_s;
         else if (!std::strcmp(argv[i], "--key-id")) target = &key_id;
+        else if (!std::strcmp(argv[i], "--recv-buffer-kb")) target = &recv_kb;
         if (!target || i + 1 >= argc || !parse_num(argv[++i], *target)) { usage(argv[0]); return 2; }
     }
     if (port < 0 || port > 65535 || http_port < 0 || http_port > 65535 || max_packets < 0 || idle_s < 0) {
@@ -86,6 +93,8 @@ int main(int argc, char** argv) {
         auto kb = load_key_file(key_path);
         if (!kb) { std::fprintf(stderr, "error: %s\n", kb.error().message.c_str()); return 1; }
         keyring.add(Key{static_cast<std::uint8_t>(key_id), std::move(kb.value())});
+        // Opt-in cap on the HMAC work an attacker can force with well-formed but badly signed packets.
+        if (verify_budget) keyring.set_verification_budget(2000.0, 500.0);
     }
     const bool secure = !keyring.empty();
 
@@ -100,10 +109,16 @@ int main(int argc, char** argv) {
         std::printf("ground_station: recording to %s\n", record_path.c_str());
     }
 
-    auto sock = UdpSocket::bind_loopback(static_cast<std::uint16_t>(port));
+    if (recv_kb < 0 || recv_kb > 65536) {
+        std::fprintf(stderr, "error: --recv-buffer-kb must be 0..65536\n");
+        return 2;
+    }
+    auto sock = UdpSocket::bind_loopback(static_cast<std::uint16_t>(port), static_cast<int>(recv_kb) * 1024);
     if (!sock) { std::fprintf(stderr, "error: %s\n", sock.error().message.c_str()); return 1; }
     std::printf("ground_station: listening for telemetry on udp 127.0.0.1:%u%s\n", sock.value().local_port(),
                 secure ? " (authentication REQUIRED)" : "");
+    if (recv_kb > 0) std::printf("ground_station: receive buffer %d KiB (requested %d KiB)\n",
+                                 sock.value().receive_buffer_bytes() / 1024, static_cast<int>(recv_kb));
 
     TelemetryStore store;
     HttpServer http;
@@ -148,9 +163,13 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "SECURITY: unauthenticated packet refused (%zu bytes)\n", d.size());
                 continue;
             }
-            auto opened = keyring.receive(d.data(), d.size());
+            auto opened = keyring.receive(d.data(), d.size(), rx_ms);
             if (!opened) {
                 const SecureError e = opened.error();
+                if (e == SecureError::RateLimited) {
+                    store.auth_failure();   // still an attack signal; just no per-packet log line, which would itself be a DoS amplifier
+                    continue;
+                }
                 if (e == SecureError::Replay || e == SecureError::TooOld || e == SecureError::TooFarAhead) {
                     store.replay();
                     std::fprintf(stderr, "SECURITY: %s\n", to_string(e));

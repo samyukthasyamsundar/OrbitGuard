@@ -1,15 +1,45 @@
 # OrbitGuard
 
 [![CI](https://github.com/samyukthasyamsundar/OrbitGuard/actions/workflows/ci.yml/badge.svg)](https://github.com/samyukthasyamsundar/OrbitGuard/actions/workflows/ci.yml)
+[![Security](https://github.com/samyukthasyamsundar/OrbitGuard/actions/workflows/security.yml/badge.svg)](https://github.com/samyukthasyamsundar/OrbitGuard/actions/workflows/security.yml)
 
-A satellite telemetry simulation written in C++17. A **satellite simulator** streams
-telemetry over UDP to a separate **ground station** receiver on localhost. The point of
-the project is the engineering around the link: an explicit wire protocol, validation,
-and failure handling.
-
-**Status: Phase 3.** Simulator, ground station, protocol, tests, a live web dashboard, link fault injection, threshold alerts, record and replay, and authenticated telemetry with a security test suite.
+A satellite telemetry link in C++17, built to practise **securing and testing a system that
+parses untrusted input**. A simulated satellite sends telemetry over UDP to a ground station,
+which validates it, authenticates it, charts it on a live dashboard, and can be attacked.
 
 ![OrbitGuard dashboard](docs/dashboard.png)
+
+## What makes it interesting
+
+- **An attack tool that found a real flaw in my own design.** `rogue_sender` forges, tampers,
+  replays and floods a live ground station. Running it showed that *one* genuinely signed packet
+  with a huge counter made the replay window reject every later real packet (40 of 40 lost). I
+  fixed it by bounding counter jumps and re-ran the attack to confirm. A related weakness (a
+  poisoned *first* packet) can't be closed inside the protocol, so it is documented, not hidden.
+- **A threat model tied to evidence.** [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) lists ten
+  threats, each pointing at the test or experiment that backs it, and a longer list of what is
+  **not** protected.
+- **Tests that were themselves tested.** The security tests were validated by *mutation*: I
+  deliberately broke the code (removed the tag check, half-checked it, left the counter out of
+  the tag, advanced the replay window early, an off-by-one) and confirmed a test failed each
+  time. That process also exposed a gap in my own tests (an HMAC key-length boundary), now closed.
+- **Fuzzing and static analysis in CI.** Four untrusted-input parsers are fuzzed (coverage-guided
+  with libFuzzer on Linux, plus a portable seeded driver), alongside CodeQL, cppcheck, and
+  AddressSanitizer / UBSan / ThreadSanitizer builds on gcc and clang.
+- **Defence in depth on the supply chain too.** The GoogleTest download is pinned to a SHA-256
+  (verified: a wrong hash aborts the build), workflow tokens are read-only, and binaries are built
+  with a stack protector, `_FORTIFY_SOURCE` and PIE.
+- **Honest limits.** Every feature lists what it does not do. See [Known limitations](#known-limitations).
+
+By the numbers: 173 tests, about 2,800 lines of source and 2,000 of tests, 4 CI platforms and
+3 security scans, all passing.
+
+## Contents
+
+[Build and test](#build-and-test) · [Run](#run) · [Security](#security) ·
+[Degraded links](#testing-a-degraded-link) · [Alerts](#alerts) · [Record and replay](#record-and-replay) ·
+[Architecture](#architecture) · [Wire format](#wire-format-v1-28-bytes-big-endian) ·
+[Engineering decisions](#engineering-decisions) · [Known limitations](#known-limitations)
 
 ## Build and test
 
@@ -45,6 +75,45 @@ port, `--no-dashboard` turns it off). Both programs accept `--help`. The simulat
 telemetry); the ground station takes `--max-packets N` and `--idle-timeout-s N` so it can
 be scripted. Ctrl-C stops either one cleanly, and the ground station prints a summary
 (valid, rejected, lost, duplicate and out-of-order counts).
+
+## Security
+
+By default the link has only a CRC, which catches accidents but not an attacker. With a shared
+key, every packet is authenticated (HMAC-SHA256, 128-bit tag) and protected against replay:
+
+```sh
+python3 -c "import secrets; print(secrets.token_hex(32))" > key.hex && chmod 600 key.hex
+./build/ground_station --port 5000 --key-file key.hex     # now REQUIRES signed packets
+./build/satellite_sim  --port 5000 --key-file key.hex
+```
+
+The ground station then refuses unsigned, forged, tampered and replayed packets, counts each as a
+security event, and shows them on the dashboard without charting them. Keys are read from a file
+that must be mode 600 (never from the command line, where they would leak).
+
+`rogue_sender` attacks a local ground station so you can watch the defences work:
+
+```sh
+./build/rogue_sender --attack forge|wrongkey|tamper|replay|flood --port 5000 --key-file key.hex
+```
+
+![Dashboard under attack](docs/dashboard-security.png)
+
+**Read [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md)** for what is and is not protected. In short:
+it defeats forgery, tampering, replay and downgrade by someone without the key; it does **not**
+give confidentiality, protect a stolen key, or stop a flood from crowding out real packets (measured,
+not solved; see the threat model's DoS section for what was tried and what did not help).
+
+Other security work in the repo:
+- **Fuzzing** of the packet decoder, authenticated opener, HTTP parser and recording reader.
+  `fuzz_driver` runs anywhere; coverage-guided libFuzzer targets run in CI on Linux.
+- **CI scanning:** CodeQL, cppcheck, and sanitizer builds. Workflow tokens are read-only.
+- **Supply chain:** the GoogleTest download is pinned to a SHA-256 (a wrong hash fails the build).
+- **Hardening flags:** stack protector, `_FORTIFY_SOURCE`, PIE.
+- **Mutation-checked tests:** the security tests were validated by deliberately breaking the code.
+
+> The SHA-256 and HMAC here are implemented from the standards and tested against the official
+> vectors, but they are a learning implementation. Use a vetted library for anything real.
 
 ## Testing a degraded link
 
@@ -121,44 +190,6 @@ then `rx_time_ms`, a length and the raw bytes per datagram). Recordings are trea
 untrusted input: record lengths are bounded before any allocation, a file cut off partway
 through a record (for example after a crash) replays everything before it and reports the
 truncation, and `--record` refuses to overwrite an existing file.
-
-## Security
-
-By default the link has only a CRC, which catches accidents but not an attacker. With a shared
-key, every packet is authenticated (HMAC-SHA256, 128-bit tag) and protected against replay:
-
-```sh
-python3 -c "import secrets; print(secrets.token_hex(32))" > key.hex && chmod 600 key.hex
-./build/ground_station --port 5000 --key-file key.hex     # now REQUIRES signed packets
-./build/satellite_sim  --port 5000 --key-file key.hex
-```
-
-The ground station then refuses unsigned, forged, tampered and replayed packets, counts each as a
-security event, and shows them on the dashboard without charting them. Keys are read from a file
-that must be mode 600 (never from the command line, where they would leak).
-
-`rogue_sender` attacks a local ground station so you can watch the defences work:
-
-```sh
-./build/rogue_sender --attack forge|wrongkey|tamper|replay|flood --port 5000 --key-file key.hex
-```
-
-![Dashboard under attack](docs/dashboard-security.png)
-
-**Read [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md)** for what is and is not protected. In short:
-it defeats forgery, tampering, replay and downgrade by someone without the key; it does **not**
-give confidentiality, protect a stolen key, or stop a flood from crowding out real packets.
-
-Other security work in the repo:
-- **Fuzzing** of the packet decoder, authenticated opener, HTTP parser and recording reader.
-  `fuzz_driver` runs anywhere; coverage-guided libFuzzer targets run in CI on Linux.
-- **CI scanning:** CodeQL, cppcheck, and sanitizer builds. Workflow tokens are read-only.
-- **Supply chain:** the GoogleTest download is pinned to a SHA-256 (a wrong hash fails the build).
-- **Hardening flags:** stack protector, `_FORTIFY_SOURCE`, PIE.
-- **Mutation-checked tests:** the security tests were validated by deliberately breaking the code.
-
-> The SHA-256 and HMAC here are implemented from the standards and tested against the official
-> vectors, but they are a learning implementation. Use a vetted library for anything real.
 
 ## Architecture
 

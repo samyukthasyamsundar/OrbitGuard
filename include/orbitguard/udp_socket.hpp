@@ -25,11 +25,18 @@ public:
 
     // Create a socket bound to 127.0.0.1:port (port 0 = OS-assigned).
     static Result<UdpSocket, NetError> bind_loopback(std::uint16_t port);
+    // Like bind_loopback, but first asks for a receive buffer of at least `recv_buffer_bytes`
+    // (0 = leave the OS default). A bigger buffer lets a burst queue up instead of being dropped
+    // by the kernel before the program can read it. The OS may grant less than requested; use
+    // receive_buffer_bytes() to see what was actually granted.
+    static Result<UdpSocket, NetError> bind_loopback(std::uint16_t port, int recv_buffer_bytes);
     // Create an unbound sending socket.
     static Result<UdpSocket, NetError> create();
 
     // Port the socket is bound to (useful after bind with port 0). 0 on error.
     std::uint16_t local_port() const;
+    // Size of the receive buffer the OS actually granted, or 0 on error.
+    int receive_buffer_bytes() const;
 
     Result<bool, NetError> send_to_loopback(std::uint16_t port, const std::vector<std::uint8_t>& data);
 

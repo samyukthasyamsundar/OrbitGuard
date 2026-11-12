@@ -22,6 +22,7 @@ const char* to_string(SecureError e) {
         case SecureError::TooOld: return "packet older than the replay window";
         case SecureError::TooFarAhead: return "counter jumps implausibly far ahead";
         case SecureError::Malformed: return "authenticated but malformed telemetry";
+        case SecureError::RateLimited: return "verification budget exhausted";
         case SecureError::InvalidKey: return "invalid key";
     }
     return "unknown error";
@@ -138,9 +139,17 @@ bool KeyRing::add(Key key) {
     return true;
 }
 
-Result<Opened, SecureError> KeyRing::receive(const std::uint8_t* data, std::size_t size) {
+Result<Opened, SecureError> KeyRing::receive(const std::uint8_t* data, std::size_t size, std::uint64_t now_ms) {
+    // Only a packet that is well-formed enough to reach the HMAC is worth budgeting: anything else is
+    // rejected for a few nanoseconds by the size and key-id checks. Charge first, refund on success.
+    bool charged = false;
+    if (budget_ && data != nullptr && size == kSecurePacketSize && looks_secure(data, size)) {
+        if (!budget_->allow(now_ms)) return SecureError::RateLimited;
+        charged = true;
+    }
     auto opened = open(data, size, keys_);
     if (!opened) return opened.error();
+    if (charged) budget_->refund();   // it verified, so it was not an attack on the budget
 
     for (std::size_t i = 0; i < keys_.size(); ++i) {
         if (keys_[i].id != opened.value().key_id) continue;
