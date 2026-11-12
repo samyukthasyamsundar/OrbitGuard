@@ -23,7 +23,7 @@ public:
 private:
     void compress(const std::uint8_t block[64]);
     std::uint32_t h_[8];
-    std::uint8_t buf_[64];
+    std::uint8_t buf_[64] = {};
     std::size_t buf_len_ = 0;
     std::uint64_t total_bytes_ = 0;
 };

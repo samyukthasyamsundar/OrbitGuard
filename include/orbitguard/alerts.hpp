@@ -45,7 +45,7 @@ struct Alert {
 
 class AlertEvaluator {
 public:
-    explicit AlertEvaluator(AlertConfig cfg = AlertConfig::defaults()) : cfg_(cfg) {}
+    explicit AlertEvaluator(const AlertConfig& cfg = AlertConfig::defaults()) : cfg_(cfg) {}
 
     // Feed one sample; returns the alerts that are active afterwards.
     const std::vector<Alert>& update(const Telemetry& t);

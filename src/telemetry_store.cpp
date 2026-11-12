@@ -4,7 +4,7 @@
 
 namespace orbitguard {
 
-TelemetryStore::TelemetryStore(std::size_t capacity, AlertConfig alerts)
+TelemetryStore::TelemetryStore(std::size_t capacity, const AlertConfig& alerts)
     : capacity_(std::max<std::size_t>(1, capacity)), alerts_(alerts) {}
 
 SequenceStatus TelemetryStore::ingest(const Telemetry& t, std::uint64_t rx_time_ms) {

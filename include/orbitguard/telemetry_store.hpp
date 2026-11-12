@@ -39,7 +39,7 @@ struct Snapshot {
 class TelemetryStore {
 public:
     explicit TelemetryStore(std::size_t capacity = kDefaultStoreCapacity,
-                            AlertConfig alerts = AlertConfig::defaults());
+                            const AlertConfig& alerts = AlertConfig::defaults());
 
     // Record a validated packet. Duplicates and late (out-of-order) packets are
     // counted but not added to the history, which stays monotonic for charting.
