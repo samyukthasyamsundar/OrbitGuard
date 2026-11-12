@@ -1,6 +1,7 @@
 // OrbitGuard ground station: receives, validates and logs telemetry over UDP,
 // and serves a live web dashboard on localhost.
 #include <csignal>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -38,6 +39,9 @@ void usage(const char* prog) {
         "  --verify-budget     OPT-IN: cap the HMAC work forced by well-formed but badly signed packets\n"
         "                      (2000/s, burst 500). Saves CPU under a forgery flood but also refuses\n"
         "                      genuine packets while the budget is empty; see docs/THREAT_MODEL.md\n"
+        "  --map TIMESCALE,RATE  show the satellite on a world map. Give the same --time-scale and\n"
+        "                      --rate-hz that satellite_sim uses (e.g. --map 300,5); the orbit is a\n"
+        "                      simple circular model positioned from each packet's sequence number\n"
         "  --recv-buffer-kb N  ask the OS for a UDP receive buffer of N KiB so a burst queues instead of\n"
         "                      being dropped (default: OS default)\n"
         "  --max-packets N     exit after N valid packets (default 0 = unlimited)\n"
@@ -52,7 +56,8 @@ bool parse_num(const char* s, double& out) {
 
 int main(int argc, char** argv) {
     double port = 5000, http_port = 8080, max_packets = 0, idle_s = 0;
-    bool dashboard = true, verify_budget = false;   // off by default: it trades availability for CPU
+    bool dashboard = true, verify_budget = false;
+    double map_scale = 0, map_rate = 0;   // both > 0 once --map is given   // off by default: it trades availability for CPU
     std::string record_path, key_path;
     double key_id = 1, recv_kb = 0;
     for (int i = 1; i < argc; ++i) {
@@ -69,6 +74,22 @@ int main(int argc, char** argv) {
         }
         if (!std::strcmp(argv[i], "--no-dashboard")) { dashboard = false; continue; }
         if (!std::strcmp(argv[i], "--verify-budget")) { verify_budget = true; continue; }
+        if (!std::strcmp(argv[i], "--map")) {
+            // "--map SCALE,RATE": both must be positive finite numbers.
+            if (i + 1 >= argc) { usage(argv[0]); return 2; }
+            const char* spec = argv[++i];
+            char* mid = nullptr;
+            map_scale = std::strtod(spec, &mid);
+            if (mid == spec || *mid != ',') { std::fprintf(stderr, "error: --map expects TIMESCALE,RATE (e.g. 300,5)\n"); return 2; }
+            char* end = nullptr;
+            map_rate = std::strtod(mid + 1, &end);
+            if (end == mid + 1 || *end != '\0' || !std::isfinite(map_scale) || !std::isfinite(map_rate) ||
+                map_scale <= 0 || map_rate <= 0 || map_rate > 1000) {
+                std::fprintf(stderr, "error: --map needs a positive time scale and a rate between 0 and 1000\n");
+                return 2;
+            }
+            continue;
+        }
         double* target = nullptr;
         if (!std::strcmp(argv[i], "--port")) target = &port;
         else if (!std::strcmp(argv[i], "--http-port")) target = &http_port;
@@ -121,6 +142,10 @@ int main(int argc, char** argv) {
                                  sock.value().receive_buffer_bytes() / 1024, static_cast<int>(recv_kb));
 
     TelemetryStore store;
+    if (map_scale > 0) {
+        store.enable_orbit(OrbitParams{}, map_scale / map_rate);
+        std::printf("ground_station: map enabled (%.0f sim-s per real-s at %.2f packets/s)\n", map_scale, map_rate);
+    }
     HttpServer http;
     if (dashboard) {
         auto started = http.start(static_cast<std::uint16_t>(http_port), make_dashboard_handler(store, kDashboardHtml));

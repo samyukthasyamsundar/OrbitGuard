@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <limits>
 #include <thread>
 
 #include "orbitguard/telemetry_store.hpp"
@@ -155,4 +156,64 @@ TEST(TelemetryStore, SecurityEventsAreCountedSeparatelyAndNeverTouchTheHistory) 
     EXPECT_EQ(snap.stats.valid, 0u);
     EXPECT_EQ(snap.stats.rejected, 0u);
     EXPECT_TRUE(snap.samples.empty());
+}
+
+TEST(TelemetryStoreOrbit, NoPositionUntilEnabledAndASampleExists) {
+    TelemetryStore s;
+    EXPECT_FALSE(s.snapshot(10).has_position);
+    s.ingest(make(0, 100), 0);
+    EXPECT_FALSE(s.snapshot(10).has_position);          // data but no orbit model
+    TelemetryStore m;
+    m.enable_orbit(OrbitParams{}, 60);
+    EXPECT_FALSE(m.snapshot(10).has_position);          // orbit but no data
+    m.ingest(make(0, 100), 0);
+    EXPECT_TRUE(m.snapshot(10).has_position);
+}
+
+TEST(TelemetryStoreOrbit, PositionFollowsTheSequenceNumber) {
+    TelemetryStore s;
+    OrbitParams o;
+    o.earth_rotation_deg_per_s = 0;
+    s.enable_orbit(o, o.period_s / 4);                  // each packet is a quarter orbit
+    s.ingest(make(0, 100), 0);
+    EXPECT_NEAR(s.snapshot(1).position.lat_deg, 0.0, 1e-6);
+    s.ingest(make(1, 101), 0);
+    EXPECT_NEAR(s.snapshot(1).position.lat_deg, o.inclination_deg, 1e-6);   // quarter orbit: northernmost
+    s.ingest(make(2, 102), 0);
+    EXPECT_NEAR(s.snapshot(1).position.lat_deg, 0.0, 1e-6);                 // half orbit: back on the equator
+}
+
+TEST(TelemetryStoreOrbit, SenderRestartPutsTheSatelliteBackAtTheStart) {
+    TelemetryStore s;
+    s.enable_orbit(OrbitParams{}, 300);
+    s.ingest(make(100, 1000), 0);
+    const double before = s.snapshot(1).orbit_time_s;
+    s.ingest(make(0, 9000), 0);                         // restart: newer timestamp, sequence 0
+    EXPECT_GT(before, 0);
+    EXPECT_EQ(s.snapshot(1).orbit_time_s, 0.0);
+}
+
+TEST(TelemetryStoreOrbit, LateAndDuplicatePacketsDoNotMoveTheSatellite) {
+    TelemetryStore s;
+    s.enable_orbit(OrbitParams{}, 60);
+    s.ingest(make(10, 1010), 0);
+    const double t = s.snapshot(1).orbit_time_s;
+    s.ingest(make(10, 1010), 0);                        // duplicate
+    s.ingest(make(5, 1005), 0);                         // late
+    EXPECT_EQ(s.snapshot(1).orbit_time_s, t);
+}
+
+TEST(TelemetryStoreOrbit, InvalidSettingsLeaveTheMapDisabled) {
+    for (double bad : {0.0, -5.0, std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity()}) {
+        TelemetryStore s;
+        s.enable_orbit(OrbitParams{}, bad);
+        s.ingest(make(0, 100), 0);
+        EXPECT_FALSE(s.snapshot(1).has_position) << bad;
+    }
+    OrbitParams broken;
+    broken.period_s = 0;
+    TelemetryStore s;
+    s.enable_orbit(broken, 60);
+    s.ingest(make(0, 100), 0);
+    EXPECT_FALSE(s.snapshot(1).has_position);
 }

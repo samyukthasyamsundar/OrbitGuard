@@ -2,6 +2,8 @@
 
 #include <cstdio>
 
+#include "orbitguard/orbit.hpp"
+
 namespace orbitguard {
 
 namespace {
@@ -49,7 +51,33 @@ std::string snapshot_to_json(const Snapshot& s, std::uint64_t server_time_ms) {
         o += "\",\"value\":" + fixed2(a.value);
         o += ",\"since_ms\":" + std::to_string(a.since_ms) + '}';
     }
-    o += "],\"samples\":[";
+    o += "],\"position\":";
+    if (!s.has_position) {
+        o += "null";
+    } else {
+        o += "{\"lat\":" + fixed2(s.position.lat_deg) + ",\"lon\":" + fixed2(s.position.lon_deg);
+        o += std::string(",\"sunlit\":") + (s.position.sunlit ? "true" : "false");
+        o += ",\"orbit_time_s\":" + fixed2(s.orbit_time_s);
+        o += ",\"inclination_deg\":" + fixed2(s.orbit.inclination_deg);
+        o += ",\"period_s\":" + fixed2(s.orbit.period_s);
+        // Past and upcoming ground track: one orbit behind and one ahead, so the page can draw a trail
+        // and the path the satellite is about to follow. 3-decimal precision is under 150 m, far finer
+        // than a map pixel.
+        // A quarter orbit behind and three quarters ahead, so the trail and the path to come join at
+        // the satellite instead of drawing two overlapping full orbits (the Earth turns under the orbit,
+        // so consecutive orbits are different curves 22 degrees apart). "now" is index kNowIndex.
+        const auto track = ground_track(s.orbit, s.orbit_time_s - 0.25 * s.orbit.period_s, s.orbit.period_s, s.orbit.period_s / 160.0);
+        o += ",\"track_now_index\":40";
+        o += ",\"track\":[";
+        for (std::size_t i = 0; i < track.size(); ++i) {
+            if (i) o += ',';
+            char b[64];
+            std::snprintf(b, sizeof b, "[%.2f,%.2f]", track[i].lat_deg, track[i].lon_deg);
+            o += b;
+        }
+        o += "]}";
+    }
+    o += ",\"samples\":[";
     for (std::size_t i = 0; i < s.samples.size(); ++i) {
         const Telemetry& t = s.samples[i];
         if (i) o += ',';

@@ -139,6 +139,28 @@ button:focus-visible, .plot:focus-visible { outline: 2px solid var(--series); ou
 .sec-banner .a-title { font-weight: 600; }
 .sec-banner .a-detail { color: var(--ink2); }
 
+
+.mapcard { margin-bottom: 16px; }
+.mapcard .card-head { margin-bottom: 4px; }
+.map-sub { color: var(--ink2); font-size: 12px; }
+.map { position: relative; }
+.map svg { display: block; width: 100%; height: auto; border-radius: 8px; }
+.map-ocean { fill: var(--surface); }
+.map-grid { stroke: var(--grid); stroke-width: 1; fill: none; }
+.map-equator { stroke: var(--axis); stroke-width: 1; fill: none; }
+.map-tick { fill: var(--muted); }
+.map-trail { fill: none; stroke: var(--series); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.map-ahead { fill: none; stroke: var(--series); stroke-width: 1.5; stroke-linecap: round; stroke-dasharray: 1 5; opacity: 0.7; }
+.map-sat { fill: var(--series); stroke: var(--surface); stroke-width: 2; }
+.map-sat-ring { fill: none; stroke: var(--series); stroke-width: 1.5; opacity: 0.5; }
+.map-gs { fill: var(--surface); stroke: var(--ink); stroke-width: 2; }
+.map-label { fill: var(--ink2); }
+.map-legend { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 8px; color: var(--ink2); font-size: 12px; }
+.map-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.map-legend svg { width: 22px; height: 10px; border-radius: 0; }
+.map-readout { margin-top: 4px; font-variant-numeric: tabular-nums; }
+.map-na { color: var(--ink2); padding: 24px 0; text-align: center; }
+
 h2.section { margin: 28px 0 12px; color: var(--ink2); }
 .tiles { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
 .tile { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 12px 16px; }
@@ -189,6 +211,16 @@ noscript { display: block; padding: 16px; }
 
   <div class="alerts" id="alerts" role="region" aria-label="Active alerts" aria-live="polite"></div>
 
+  <section class="card mapcard" id="mapcard" hidden aria-labelledby="map-h">
+    <div class="card-head">
+      <h2 class="card-label" id="map-h">Satellite position</h2>
+      <span class="map-sub" id="map-sub"></span>
+    </div>
+    <div class="map" id="map" tabindex="0" role="img"></div>
+    <div class="map-legend" id="map-legend"></div>
+    <div class="map-readout" id="map-readout" aria-live="off"></div>
+  </section>
+
   <div class="empty" id="empty" hidden>
     <strong>Waiting for telemetry</strong>
     Start <code>satellite_sim</code> with <code>--port</code> set to this ground station&rsquo;s UDP port.
@@ -235,7 +267,7 @@ noscript { display: block; padding: 16px; }
   ];
 
   var state = {
-    samples: [], alerts: [], stats: null, serverTime: 0,
+    samples: [], alerts: [], position: null, stats: null, serverTime: 0,
     online: false, loaded: false,
     windowMs: 300000, table: false, hover: {}, lastKey: ''
   };
@@ -599,6 +631,99 @@ noscript { display: block; padding: 16px; }
     host.appendChild(row);
   }
 
+
+  // ---------- world map: equirectangular, drawn in SVG with no external tiles or data ----------
+  var MAP_W = 720, MAP_H = 360;
+  function mx(lon) { return (lon + 180) / 360 * MAP_W; }
+  function my(lat) { return (90 - lat) / 180 * MAP_H; }
+
+  // Split a track into runs that never cross the +/-180 meridian, so a path leaving the right edge
+  // re-enters on the left instead of drawing a line across the whole map.
+  function trackRuns(track) {
+    var runs = [], cur = [];
+    for (var i = 0; i < track.length; i++) {
+      if (cur.length && Math.abs(track[i][1] - cur[cur.length - 1][1]) > 180) { runs.push(cur); cur = []; }
+      cur.push(track[i]);
+    }
+    if (cur.length) runs.push(cur);
+    return runs;
+  }
+  function pathOf(run) {
+    var d = '';
+    for (var i = 0; i < run.length; i++) d += (i ? 'L' : 'M') + mx(run[i][1]).toFixed(1) + ' ' + my(run[i][0]).toFixed(1);
+    return d;
+  }
+
+  function renderMap() {
+    var card = document.getElementById('mapcard');
+    var p = state.position;
+    card.hidden = !p;
+    if (!p) return;
+    var host = document.getElementById('map');
+    // The drawing is 720 units wide and scaled to the container, which shrinks text with it. Pick
+    // sizes in drawing units that come out at about 11 px (ticks) and 12 px (label) on screen.
+    var shown = Math.max(200, host.clientWidth || MAP_W);
+    var unit = MAP_W / shown;
+    var tickPx = Math.round(11 * unit * 10) / 10, labelPx = Math.round(12.5 * unit * 10) / 10;
+
+    var svg = sv('svg', { viewBox: '0 0 ' + MAP_W + ' ' + MAP_H, preserveAspectRatio: 'xMidYMid meet', 'aria-hidden': 'true' });
+    svg.appendChild(sv('rect', { x: 0, y: 0, width: MAP_W, height: MAP_H, 'class': 'map-ocean' }));
+    // No day/night shading on purpose. The satellite's shadow state comes from its orbital phase (what
+    // drives the battery and temperature it reports), not from where the Sun is over the Earth, so a
+    // shaded half-map would contradict "in Earth's shadow" whenever the two models disagree, which they
+    // do. The state is shown in words and by the sun or moon beside the satellite instead.
+
+    for (var lon = -150; lon <= 150; lon += 30) {
+      svg.appendChild(sv('line', { x1: mx(lon), x2: mx(lon), y1: 0, y2: MAP_H, 'class': 'map-grid' }));
+      // Label every 30 degrees when there is room, every 60 on a narrow screen (labels would collide).
+      if (shown >= 560 || lon % 60 === 0) {
+        var tl = sv('text', { x: mx(lon), y: MAP_H - 3, 'text-anchor': 'middle', 'class': 'map-tick', 'font-size': tickPx });
+        tl.textContent = Math.abs(lon) + '\u00b0' + (lon < 0 ? 'W' : 'E');
+        svg.appendChild(tl);
+      }
+    }
+    for (var lat = -60; lat <= 60; lat += 30) {
+      svg.appendChild(sv('line', { x1: 0, x2: MAP_W, y1: my(lat), y2: my(lat), 'class': lat === 0 ? 'map-equator' : 'map-grid' }));
+      var ll = sv('text', { x: 3, y: my(lat) - 3, 'class': 'map-tick', 'font-size': tickPx });
+      ll.textContent = Math.abs(lat) + '\u00b0' + (lat < 0 ? 'S' : lat > 0 ? 'N' : '');
+      svg.appendChild(ll);
+    }
+
+    // Ground track: the first half of the sampled track is the past, the second half is ahead.
+    var half = p.now;   // index of "now" in the track; the satellite is drawn there
+    trackRuns(p.track.slice(0, half + 1)).forEach(function (r) { if (r.length > 1) svg.appendChild(sv('path', { d: pathOf(r), 'class': 'map-trail' })); });
+    trackRuns(p.track.slice(half)).forEach(function (r) { if (r.length > 1) svg.appendChild(sv('path', { d: pathOf(r), 'class': 'map-ahead' })); });
+
+    // Satellite: a filled dot with a ring. Shape and a text label identify it, not colour alone.
+    var sx = mx(p.lon), sy = my(p.lat);
+    svg.appendChild(sv('circle', { cx: sx, cy: sy, r: 11 * Math.max(1, unit * 0.8), 'class': 'map-sat-ring' }));
+    svg.appendChild(sv('circle', { cx: sx, cy: sy, r: 5 * Math.max(1, unit * 0.8), 'class': 'map-sat' }));
+    var lab = sv('text', { x: sx + (sx > MAP_W - 90 * unit ? -14 * unit : 14 * unit), y: sy + 4 * unit, 'text-anchor': sx > MAP_W - 90 * unit ? 'end' : 'start', 'class': 'map-label', 'font-size': labelPx });
+    lab.textContent = 'Satellite ' + (p.sunlit ? '\u2600' : '\u263e');
+    svg.appendChild(lab);
+
+    host.replaceChildren(svg);
+
+    var where = Math.abs(p.lat).toFixed(1) + '\u00b0' + (p.lat < 0 ? 'S' : 'N') + ', ' +
+                Math.abs(p.lon).toFixed(1) + '\u00b0' + (p.lon < 0 ? 'W' : 'E');
+    host.setAttribute('aria-label', 'Satellite ground track. The satellite is at ' + where + ', ' + (p.sunlit ? 'in sunlight' : 'in Earth\u2019s shadow') + '.');
+    document.getElementById('map-sub').textContent = p.inc.toFixed(1) + '\u00b0 inclination \u00b7 ' + (p.period / 60).toFixed(0) + ' min orbit \u00b7 simplified model';
+    document.getElementById('map-readout').textContent = where + ' \u00b7 ' + (p.sunlit ? 'in sunlight' : 'in Earth\u2019s shadow');
+
+    var lg = document.getElementById('map-legend');
+    if (!lg.firstChild) {
+      var items = [['trail', 'Path so far'], ['ahead', 'Path ahead']];
+      items.forEach(function (it) {
+        var s = el('span');
+        var k = sv('svg', { viewBox: '0 0 22 10', 'aria-hidden': 'true' });
+        k.appendChild(sv('line', { x1: 1, x2: 21, y1: 5, y2: 5, 'class': it[0] === 'trail' ? 'map-trail' : 'map-ahead' }));
+        s.appendChild(k);
+        s.appendChild(document.createTextNode(it[1]));
+        lg.appendChild(s);
+      });
+    }
+  }
+
   // ---------- rendering ----------
   var tileValues = {};
   function buildTiles() {
@@ -618,6 +743,7 @@ noscript { display: block; padding: 16px; }
     renderStatus();
     renderAlerts();
     renderSecurity();
+    renderMap();
     var has = state.samples.length > 0;
     document.getElementById('empty').hidden = has || !state.loaded;
     document.getElementById('charts').hidden = !has || state.table;
@@ -652,6 +778,21 @@ noscript { display: block; padding: 16px; }
       al.push({ metric: a.metric, severity: a.severity, side: a.side, value: a.value, since: a.since_ms });
     });
     state.alerts = al;
+    state.position = null;
+    var pz = d.position;
+    if (pz && typeof pz === 'object' && num(pz.lat) !== null && num(pz.lon) !== null &&
+        Math.abs(pz.lat) <= 90 && Math.abs(pz.lon) <= 180) {
+      var tr = [];
+      (Array.isArray(pz.track) ? pz.track : []).forEach(function (q) {
+        if (Array.isArray(q) && q.length === 2 && num(q[0]) !== null && num(q[1]) !== null &&
+            Math.abs(q[0]) <= 90 && Math.abs(q[1]) <= 180) tr.push([q[0], q[1]]);
+      });
+      state.position = {
+        lat: pz.lat, lon: pz.lon, sunlit: pz.sunlit === true,
+        now: Math.max(0, Math.min(tr.length - 1, num(pz.track_now_index) || 0)),
+        t: num(pz.orbit_time_s) || 0, inc: num(pz.inclination_deg) || 0, period: num(pz.period_s) || 0, track: tr
+      };
+    }
     state.samples = out;
     state.stats = d.stats;
     state.serverTime = d.server_time_ms;
@@ -697,7 +838,7 @@ noscript { display: block; padding: 16px; }
     });
 
     if (window.ResizeObserver) {
-      new ResizeObserver(function () { if (!state.table) METRICS.forEach(draw); }).observe(charts);
+      new ResizeObserver(function () { if (!state.table) METRICS.forEach(draw); renderMap(); }).observe(charts);
     }
     renderStatus();
     poll();

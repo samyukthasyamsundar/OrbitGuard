@@ -115,6 +115,32 @@ Other security work in the repo:
 > The SHA-256 and HMAC here are implemented from the standards and tested against the official
 > vectors, but they are a learning implementation. Use a vetted library for anything real.
 
+## Satellite map
+
+Add `--map TIMESCALE,RATE` to the ground station (the same `--time-scale` and `--rate-hz` the
+simulator uses) to show the satellite moving on a world map, with the path it has flown and the path
+ahead:
+
+```sh
+./build/ground_station --port 5000 --map 300,5
+./build/satellite_sim  --port 5000 --rate-hz 5 --time-scale 300
+```
+
+![Satellite ground track](docs/dashboard-map.png)
+
+**This is a simplified model, not orbit tracking.** The orbit is a perfect circle (51.6 degrees
+inclination, 90 minutes), with no drag or perturbations, on a spherical Earth. The position is
+computed on the ground station from the packet's sequence number; **it is not in the telemetry and
+nothing about location is transmitted**. The map is a plain latitude/longitude grid with no
+coastlines, because drawing real coastlines needs a map data file or an external service, and the
+dashboard is deliberately self-contained. A real mission would propagate a published orbital element
+set (TLE) with SGP4.
+
+The orbit maths is tested against geometry worked out by hand (for example, latitude peaks at the
+inclination, the track shifts about 22.5 degrees west per orbit, and a 45 degree orbit at one eighth
+of the way round is at 30.0 N, 35.264 E). Mutation checks found a gap in my first tests, a longitude
+formula that ignored the inclination, and a hand-computed test now covers it.
+
 ## Testing a degraded link
 
 `satellite_sim` can impair its own link so you can watch the ground station cope. Each
@@ -232,6 +258,7 @@ The rejected datagram is reported on stderr: `rejected packet (7 bytes): packet 
 | `packet_codec.*` | Wire format, `serialize`, `deserialize`, `CodecError` |
 | `telemetry_generator.*` | Seeded orbit/eclipse model that produces samples |
 | `sha256.*`, `secure_packet.*` | SHA-256/HMAC, the authenticated packet format, replay window, key ring |
+| `orbit.*` | Simplified circular-orbit model that places the satellite on the map |
 | `alerts.*` | Threshold alerts with hysteresis |
 | `recording.*`, `replay.*` | Capture file format with a bounds-checked reader, and the paced replayer |
 | `fault_injector.*` | Seeded drop, corrupt, duplicate and reorder of wire bytes |
@@ -326,6 +353,8 @@ dashboard can reuse it unchanged.
   both a gap and out-of-order. The dashboard labels this tile "Gaps" for that reason; with
   fault injection on, gaps exceed the number of packets actually dropped.
 - No Windows support (POSIX sockets).
+- The satellite map uses a simplified circular orbit and a plain grid; it shows where a model of the
+  satellite would be, not where any real object is.
 - The dashboard keeps the latest 600 samples in memory only; there is no persistence.
 - Recordings keep only the raw datagram and arrival time; they do not store the satellite's
   link settings. Replay uses loopback UDP only.
