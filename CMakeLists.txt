@@ -100,7 +100,9 @@ if(ORBITGUARD_BUILD_TESTS)
         tests/test_udp_loopback.cpp)
     target_link_libraries(orbitguard_tests PRIVATE orbitguard_core GTest::gtest_main)
     include(GoogleTest)
-    gtest_discover_tests(orbitguard_tests)
+    # No single test should ever take more than a few seconds. A hard limit turns a hang into a fast,
+    # named failure instead of a job that silently runs until the CI platform gives up.
+    gtest_discover_tests(orbitguard_tests PROPERTIES TIMEOUT 60 DISCOVERY_TIMEOUT 60)
 endif()
 
 # Fuzzing. The portable driver runs anywhere; libFuzzer targets need a compiler runtime that Apple's
