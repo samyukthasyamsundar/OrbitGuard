@@ -11,6 +11,7 @@
 #include "orbitguard/dashboard_html.hpp"
 #include "orbitguard/packet_codec.hpp"
 #include "orbitguard/recording.hpp"
+#include "orbitguard/secure_packet.hpp"
 #include "orbitguard/telemetry_store.hpp"
 #include "orbitguard/time_util.hpp"
 #include "orbitguard/udp_socket.hpp"
@@ -24,10 +25,14 @@ void on_signal(int) { g_stop = 1; }
 void usage(const char* prog) {
     std::fprintf(stderr,
         "Usage: %s [--port N] [--http-port N] [--no-dashboard] [--record FILE]\n"
+        "          [--key-file FILE] [--key-id N]\n"
         "          [--max-packets N] [--idle-timeout-s N]\n"
         "  --port N            UDP port to listen on, localhost only (default 5000)\n"
         "  --http-port N       dashboard HTTP port, localhost only (default 8080)\n"
         "  --no-dashboard      do not start the web dashboard\n"
+        "  --key-file FILE     require authenticated packets: only packets signed with the key in\n"
+        "                      FILE (hex, chmod 600) are accepted; others are counted as attacks\n"
+        "  --key-id N          identifier for that key (default 1)\n"
         "  --record FILE       save every received datagram (valid or not) to a NEW file;\n"
         "                      refuses to overwrite. Replay with telemetry_replay\n"
         "  --max-packets N     exit after N valid packets (default 0 = unlimited)\n"
@@ -43,8 +48,14 @@ bool parse_num(const char* s, double& out) {
 int main(int argc, char** argv) {
     double port = 5000, http_port = 8080, max_packets = 0, idle_s = 0;
     bool dashboard = true;
-    std::string record_path;
+    std::string record_path, key_path;
+    double key_id = 1;
     for (int i = 1; i < argc; ++i) {
+        if (!std::strcmp(argv[i], "--key-file")) {
+            if (i + 1 >= argc) { usage(argv[0]); return 2; }
+            key_path = argv[++i];
+            continue;
+        }
         if (!std::strcmp(argv[i], "--help")) { usage(argv[0]); return 0; }
         if (!std::strcmp(argv[i], "--record")) {
             if (i + 1 >= argc) { usage(argv[0]); return 2; }
@@ -57,6 +68,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--http-port")) target = &http_port;
         else if (!std::strcmp(argv[i], "--max-packets")) target = &max_packets;
         else if (!std::strcmp(argv[i], "--idle-timeout-s")) target = &idle_s;
+        else if (!std::strcmp(argv[i], "--key-id")) target = &key_id;
         if (!target || i + 1 >= argc || !parse_num(argv[++i], *target)) { usage(argv[0]); return 2; }
     }
     if (port < 0 || port > 65535 || http_port < 0 || http_port > 65535 || max_packets < 0 || idle_s < 0) {
@@ -64,6 +76,18 @@ int main(int argc, char** argv) {
         usage(argv[0]);
         return 2;
     }
+
+    if (key_id < 0 || key_id > 255 || key_id != static_cast<int>(key_id)) {
+        std::fprintf(stderr, "error: --key-id must be an integer 0..255\n");
+        return 2;
+    }
+    KeyRing keyring;
+    if (!key_path.empty()) {
+        auto kb = load_key_file(key_path);
+        if (!kb) { std::fprintf(stderr, "error: %s\n", kb.error().message.c_str()); return 1; }
+        keyring.add(Key{static_cast<std::uint8_t>(key_id), std::move(kb.value())});
+    }
+    const bool secure = !keyring.empty();
 
     std::signal(SIGINT, on_signal);
     std::signal(SIGTERM, on_signal);
@@ -78,7 +102,8 @@ int main(int argc, char** argv) {
 
     auto sock = UdpSocket::bind_loopback(static_cast<std::uint16_t>(port));
     if (!sock) { std::fprintf(stderr, "error: %s\n", sock.error().message.c_str()); return 1; }
-    std::printf("ground_station: listening for telemetry on udp 127.0.0.1:%u\n", sock.value().local_port());
+    std::printf("ground_station: listening for telemetry on udp 127.0.0.1:%u%s\n", sock.value().local_port(),
+                secure ? " (authentication REQUIRED)" : "");
 
     TelemetryStore store;
     HttpServer http;
@@ -113,14 +138,40 @@ int main(int argc, char** argv) {
             }
         }
 
-        auto pkt = deserialize(rx.value().data);
-        if (!pkt) {
-            store.reject();
-            std::fprintf(stderr, "rejected packet (%zu bytes): %s\n", rx.value().data.size(), to_string(pkt.error()));
-            continue;  // a bad packet must never stop the receiver
+        // Decode. In secure mode ONLY authenticated packets are accepted: an unsigned (v1) packet is
+        // a downgrade attempt and is treated as an attack, never silently accepted.
+        std::optional<Telemetry> accepted;
+        if (secure) {
+            const auto& d = rx.value().data;
+            if (!looks_secure(d.data(), d.size())) {
+                store.auth_failure();
+                std::fprintf(stderr, "SECURITY: unauthenticated packet refused (%zu bytes)\n", d.size());
+                continue;
+            }
+            auto opened = keyring.receive(d.data(), d.size());
+            if (!opened) {
+                const SecureError e = opened.error();
+                if (e == SecureError::Replay || e == SecureError::TooOld || e == SecureError::TooFarAhead) {
+                    store.replay();
+                    std::fprintf(stderr, "SECURITY: %s\n", to_string(e));
+                } else {
+                    store.auth_failure();
+                    std::fprintf(stderr, "SECURITY: %s (%zu bytes)\n", to_string(e), d.size());
+                }
+                continue;
+            }
+            accepted = opened.value().telemetry;
+        } else {
+            auto pkt = deserialize(rx.value().data);
+            if (!pkt) {
+                store.reject();
+                std::fprintf(stderr, "rejected packet (%zu bytes): %s\n", rx.value().data.size(), to_string(pkt.error()));
+                continue;  // a bad packet must never stop the receiver
+            }
+            accepted = pkt.value();
         }
         ++valid;
-        const Telemetry& t = pkt.value();
+        const Telemetry& t = *accepted;
         const SequenceStatus st = store.ingest(t, rx_ms);
         const char* note = st == SequenceStatus::Gap ? " [GAP]" : st == SequenceStatus::Duplicate ? " [DUP]"
                          : st == SequenceStatus::OutOfOrder ? " [OUT-OF-ORDER]"
@@ -134,12 +185,15 @@ int main(int argc, char** argv) {
     if (recorder) std::printf("recorded %llu datagrams to %s\n",
                               static_cast<unsigned long long>(recorder->count()), record_path.c_str());
     const Snapshot snap = store.snapshot(0);
-    std::printf("summary: valid=%llu rejected=%llu lost=%llu duplicates=%llu out_of_order=%llu restarts=%llu\n",
+    std::printf("summary: valid=%llu rejected=%llu lost=%llu duplicates=%llu out_of_order=%llu restarts=%llu"
+                " auth_failures=%llu replays=%llu\n",
                 static_cast<unsigned long long>(snap.stats.valid),
                 static_cast<unsigned long long>(snap.stats.rejected),
                 static_cast<unsigned long long>(snap.stats.lost),
                 static_cast<unsigned long long>(snap.stats.duplicates),
                 static_cast<unsigned long long>(snap.stats.out_of_order),
-                static_cast<unsigned long long>(snap.stats.restarts));
+                static_cast<unsigned long long>(snap.stats.restarts),
+                static_cast<unsigned long long>(snap.stats.auth_failures),
+                static_cast<unsigned long long>(snap.stats.replays));
     return 0;
 }

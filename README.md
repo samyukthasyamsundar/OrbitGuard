@@ -7,7 +7,7 @@ telemetry over UDP to a separate **ground station** receiver on localhost. The p
 the project is the engineering around the link: an explicit wire protocol, validation,
 and failure handling.
 
-**Status: Phase 3.** Simulator, ground station, protocol, tests, a live web dashboard, link fault injection, threshold alerts, and record and replay.
+**Status: Phase 3.** Simulator, ground station, protocol, tests, a live web dashboard, link fault injection, threshold alerts, record and replay, and authenticated telemetry with a security test suite.
 
 ![OrbitGuard dashboard](docs/dashboard.png)
 
@@ -122,6 +122,44 @@ untrusted input: record lengths are bounded before any allocation, a file cut of
 through a record (for example after a crash) replays everything before it and reports the
 truncation, and `--record` refuses to overwrite an existing file.
 
+## Security
+
+By default the link has only a CRC, which catches accidents but not an attacker. With a shared
+key, every packet is authenticated (HMAC-SHA256, 128-bit tag) and protected against replay:
+
+```sh
+python3 -c "import secrets; print(secrets.token_hex(32))" > key.hex && chmod 600 key.hex
+./build/ground_station --port 5000 --key-file key.hex     # now REQUIRES signed packets
+./build/satellite_sim  --port 5000 --key-file key.hex
+```
+
+The ground station then refuses unsigned, forged, tampered and replayed packets, counts each as a
+security event, and shows them on the dashboard without charting them. Keys are read from a file
+that must be mode 600 (never from the command line, where they would leak).
+
+`rogue_sender` attacks a local ground station so you can watch the defences work:
+
+```sh
+./build/rogue_sender --attack forge|wrongkey|tamper|replay|flood --port 5000 --key-file key.hex
+```
+
+![Dashboard under attack](docs/dashboard-security.png)
+
+**Read [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md)** for what is and is not protected. In short:
+it defeats forgery, tampering, replay and downgrade by someone without the key; it does **not**
+give confidentiality, protect a stolen key, or stop a flood from crowding out real packets.
+
+Other security work in the repo:
+- **Fuzzing** of the packet decoder, authenticated opener, HTTP parser and recording reader.
+  `fuzz_driver` runs anywhere; coverage-guided libFuzzer targets run in CI on Linux.
+- **CI scanning:** CodeQL, cppcheck, and sanitizer builds. Workflow tokens are read-only.
+- **Supply chain:** the GoogleTest download is pinned to a SHA-256 (a wrong hash fails the build).
+- **Hardening flags:** stack protector, `_FORTIFY_SOURCE`, PIE.
+- **Mutation-checked tests:** the security tests were validated by deliberately breaking the code.
+
+> The SHA-256 and HMAC here are implemented from the standards and tested against the official
+> vectors, but they are a learning implementation. Use a vetted library for anything real.
+
 ## Architecture
 
 ```mermaid
@@ -162,6 +200,7 @@ The rejected datagram is reported on stderr: `rejected packet (7 bytes): packet 
 | `crc16.hpp`, `src/crc16.cpp` | CRC-16/CCITT-FALSE |
 | `packet_codec.*` | Wire format, `serialize`, `deserialize`, `CodecError` |
 | `telemetry_generator.*` | Seeded orbit/eclipse model that produces samples |
+| `sha256.*`, `secure_packet.*` | SHA-256/HMAC, the authenticated packet format, replay window, key ring |
 | `alerts.*` | Threshold alerts with hysteresis |
 | `recording.*`, `replay.*` | Capture file format with a bounds-checked reader, and the paced replayer |
 | `fault_injector.*` | Seeded drop, corrupt, duplicate and reorder of wire bytes |
@@ -263,6 +302,8 @@ dashboard can reuse it unchanged.
 - The dashboard JavaScript has no automated tests. It was checked by hand in a browser,
   and that found a real bug (the first metric's alerts were being dropped).
 - The dashboard has no authentication; it relies on being bound to localhost.
+- Authentication has no confidentiality, no per-device identity and no rate limiting; see the threat model.
+- The counter is seeded from the wall clock; a satellite whose clock jumps backwards is refused.
 
 ## License
 

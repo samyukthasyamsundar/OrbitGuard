@@ -26,6 +26,16 @@ void TelemetryStore::reject() {
     ++rejected_;
 }
 
+void TelemetryStore::auth_failure() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    ++auth_failures_;
+}
+
+void TelemetryStore::replay() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    ++replays_;
+}
+
 Snapshot TelemetryStore::snapshot(std::size_t max_samples) const {
     std::lock_guard<std::mutex> lock(mutex_);
     Snapshot s;
@@ -36,6 +46,8 @@ Snapshot TelemetryStore::snapshot(std::size_t max_samples) const {
     s.stats.out_of_order = tracker_.out_of_order();
     s.stats.restarts = tracker_.restarts();
     s.stats.alerts_raised = alerts_.raised_count();
+    s.stats.auth_failures = auth_failures_;
+    s.stats.replays = replays_;
     s.alerts = alerts_.active();
     s.stats.has_last_rx = has_last_rx_;
     s.stats.last_rx_ms = last_rx_ms_;

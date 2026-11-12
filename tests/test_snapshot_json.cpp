@@ -10,7 +10,7 @@ TEST(SnapshotJson, EmptySnapshot) {
     Snapshot s;
     EXPECT_EQ(snapshot_to_json(s, 42),
               "{\"server_time_ms\":42,\"stats\":{\"valid\":0,\"rejected\":0,\"lost\":0,"
-              "\"duplicates\":0,\"out_of_order\":0,\"restarts\":0,\"alerts_raised\":0,\"last_rx_ms\":null},"
+              "\"duplicates\":0,\"out_of_order\":0,\"restarts\":0,\"alerts_raised\":0,\"auth_failures\":0,\"replays\":0,\"last_rx_ms\":null},"
               "\"alerts\":[],\"samples\":[]}");
 }
 

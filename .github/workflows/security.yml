@@ -46,3 +46,41 @@ jobs:
           cppcheck --enable=warning,performance,portability --std=c++17
           --error-exitcode=1 --inline-suppr --quiet
           -I include src apps
+
+  fuzz:
+    name: Fuzz (libFuzzer + portable driver)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build fuzz targets with clang + sanitizers
+        run: >
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=clang++
+          -DORBITGUARD_BUILD_TESTS=OFF -DORBITGUARD_LIBFUZZER=ON -DORBITGUARD_SANITIZE=ON
+          -DORBITGUARD_WERROR=OFF
+          -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+        # The libFuzzer link itself adds -fsanitize=fuzzer per target; see CMakeLists.txt.
+      - run: cmake --build build -j
+      - name: Portable driver (deterministic, all targets)
+        run: |
+          for t in packet_decoder secure_open http_head recording_reader; do
+            n=300000; [ "$t" = recording_reader ] && n=20000
+            ./build/fuzz_driver --target "$t" --iterations "$n" --seed "$GITHUB_RUN_NUMBER"
+          done
+      - name: libFuzzer, coverage-guided (bounded)
+        run: |
+          mkdir -p corpus
+          for t in packet_decoder secure_open http_head recording_reader; do
+            mkdir -p "corpus/$t"
+            echo "== $t"
+            ./build/fuzz_$t -max_total_time=60 -max_len=700 "corpus/$t"
+          done
+      - name: Keep any crashing input for reproduction
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes
+          path: |
+            crash-*
+            oom-*
+            timeout-*
+          if-no-files-found: ignore

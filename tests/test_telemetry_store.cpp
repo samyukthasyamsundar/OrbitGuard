@@ -143,3 +143,16 @@ TEST(TelemetryStore, NoAlertsOnNominalData) {
     EXPECT_TRUE(s.snapshot(0).alerts.empty());
     EXPECT_EQ(s.snapshot(0).stats.alerts_raised, 0u);
 }
+
+TEST(TelemetryStore, SecurityEventsAreCountedSeparatelyAndNeverTouchTheHistory) {
+    TelemetryStore s;
+    s.auth_failure();
+    s.auth_failure();
+    s.replay();
+    auto snap = s.snapshot(10);
+    EXPECT_EQ(snap.stats.auth_failures, 2u);
+    EXPECT_EQ(snap.stats.replays, 1u);
+    EXPECT_EQ(snap.stats.valid, 0u);
+    EXPECT_EQ(snap.stats.rejected, 0u);
+    EXPECT_TRUE(snap.samples.empty());
+}

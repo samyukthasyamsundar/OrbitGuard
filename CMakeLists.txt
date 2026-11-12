@@ -18,7 +18,9 @@ add_library(orbitguard_core
     src/dashboard_routes.cpp
     src/fault_injector.cpp
     src/http_server.cpp
+    src/secure_packet.cpp
     src/sequence_tracker.cpp
+    src/sha256.cpp
     src/snapshot_json.cpp
     src/telemetry_generator.cpp
     src/telemetry_store.cpp
@@ -58,6 +60,9 @@ endif()
 add_executable(satellite_sim apps/satellite_sim.cpp)
 target_link_libraries(satellite_sim PRIVATE orbitguard_core)
 
+add_executable(rogue_sender apps/rogue_sender.cpp)
+target_link_libraries(rogue_sender PRIVATE orbitguard_core)
+
 add_executable(telemetry_replay apps/telemetry_replay.cpp)
 target_link_libraries(telemetry_replay PRIVATE orbitguard_core)
 
@@ -83,7 +88,9 @@ if(ORBITGUARD_BUILD_TESTS)
         tests/test_packet_codec.cpp
         tests/test_recording.cpp
         tests/test_replay.cpp
+        tests/test_secure_packet.cpp
         tests/test_sequence_tracker.cpp
+        tests/test_sha256.cpp
         tests/test_telemetry_generator.cpp
         tests/test_fault_injector.cpp
         tests/test_telemetry_store.cpp
@@ -93,4 +100,27 @@ if(ORBITGUARD_BUILD_TESTS)
     target_link_libraries(orbitguard_tests PRIVATE orbitguard_core GTest::gtest_main)
     include(GoogleTest)
     gtest_discover_tests(orbitguard_tests)
+endif()
+
+# Fuzzing. The portable driver runs anywhere; libFuzzer targets need a compiler runtime that Apple's
+# clang does not ship, so they are only built when ORBITGUARD_LIBFUZZER is ON (Linux CI).
+option(ORBITGUARD_BUILD_FUZZ "Build the fuzz driver and targets" ON)
+option(ORBITGUARD_LIBFUZZER "Also build libFuzzer binaries (needs clang with the fuzzer runtime)" OFF)
+if(ORBITGUARD_BUILD_FUZZ)
+    add_library(orbitguard_fuzz_targets STATIC fuzz/targets.cpp)
+    target_include_directories(orbitguard_fuzz_targets PUBLIC fuzz)
+    target_link_libraries(orbitguard_fuzz_targets PUBLIC orbitguard_core)
+
+    add_executable(fuzz_driver fuzz/fuzz_driver.cpp)
+    target_link_libraries(fuzz_driver PRIVATE orbitguard_fuzz_targets)
+
+    if(ORBITGUARD_LIBFUZZER)
+        foreach(tgt packet_decoder secure_open http_head recording_reader)
+            add_executable(fuzz_${tgt} fuzz/fuzz_libfuzzer.cpp)
+            target_compile_definitions(fuzz_${tgt} PRIVATE FUZZ_TARGET=${tgt})
+            target_compile_options(fuzz_${tgt} PRIVATE -fsanitize=fuzzer,address,undefined)
+            target_link_options(fuzz_${tgt} PRIVATE -fsanitize=fuzzer,address,undefined)
+            target_link_libraries(fuzz_${tgt} PRIVATE orbitguard_fuzz_targets)
+        endforeach()
+    endif()
 endif()

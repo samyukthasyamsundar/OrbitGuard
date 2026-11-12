@@ -32,6 +32,8 @@ std::string snapshot_to_json(const Snapshot& s, std::uint64_t server_time_ms) {
     field(o, "out_of_order", s.stats.out_of_order);
     field(o, "restarts", s.stats.restarts);
     field(o, "alerts_raised", s.stats.alerts_raised);
+    field(o, "auth_failures", s.stats.auth_failures);
+    field(o, "replays", s.stats.replays);
     o += "\"last_rx_ms\":";
     o += s.stats.has_last_rx ? std::to_string(s.stats.last_rx_ms) : "null";
     o += "},\"alerts\":[";

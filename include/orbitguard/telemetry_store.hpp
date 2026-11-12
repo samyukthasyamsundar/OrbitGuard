@@ -24,6 +24,8 @@ struct LinkStats {
     std::uint64_t out_of_order = 0;
     std::uint64_t restarts = 0;
     std::uint64_t alerts_raised = 0;  // times any alert was raised or escalated
+    std::uint64_t auth_failures = 0;  // forged, tampered, wrong-key, unknown-key or downgraded packets
+    std::uint64_t replays = 0;        // authentic packets rejected as replays or too old
     bool has_last_rx = false;
     std::uint64_t last_rx_ms = 0;  // wall-clock time the last valid packet arrived
 };
@@ -47,6 +49,10 @@ public:
 
     // Record a packet that failed validation.
     void reject();
+    // Security events (secure mode): a packet that failed authentication, and an authentic one
+    // rejected as a replay. Neither enters the sample history.
+    void auth_failure();
+    void replay();
 
     // Copy of the counters plus the newest `max_samples` samples (0 = stats only).
     Snapshot snapshot(std::size_t max_samples) const;
@@ -57,7 +63,7 @@ private:
     std::deque<Telemetry> samples_;
     SequenceTracker tracker_;
     AlertEvaluator alerts_;
-    std::uint64_t valid_ = 0, rejected_ = 0, last_rx_ms_ = 0;
+    std::uint64_t valid_ = 0, rejected_ = 0, last_rx_ms_ = 0, auth_failures_ = 0, replays_ = 0;
     bool has_last_rx_ = false;
 };
 

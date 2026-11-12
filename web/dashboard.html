@@ -132,6 +132,13 @@ button:focus-visible, .plot:focus-visible { outline: 2px solid var(--series); ou
 .badge .ico { width: 12px; height: 12px; }
 .card.has-alert { border-color: var(--axis); }
 
+
+.security { margin-bottom: 16px; }
+.sec-banner { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 10px 14px;
+  border-radius: 10px; background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--crit); }
+.sec-banner .a-title { font-weight: 600; }
+.sec-banner .a-detail { color: var(--ink2); }
+
 h2.section { margin: 28px 0 12px; color: var(--ink2); }
 .tiles { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
 .tile { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 12px 16px; }
@@ -178,6 +185,8 @@ noscript { display: block; padding: 16px; }
     <button class="btn" id="table-toggle" type="button" aria-pressed="false">Table view</button>
   </div>
 
+  <div class="security" id="security" role="region" aria-label="Security events" aria-live="polite"></div>
+
   <div class="alerts" id="alerts" role="region" aria-label="Active alerts" aria-live="polite"></div>
 
   <div class="empty" id="empty" hidden>
@@ -220,7 +229,9 @@ noscript { display: block; padding: 16px; }
     { key: 'duplicates', label: 'Duplicates', sub: 'repeated sequence' },
     { key: 'out_of_order', label: 'Out of order', sub: 'late arrivals' },
     { key: 'restarts', label: 'Sender restarts', sub: 'sequence reset' },
-    { key: 'alerts_raised', label: 'Alerts raised', sub: 'since ground station start' }
+    { key: 'alerts_raised', label: 'Alerts raised', sub: 'since ground station start' },
+    { key: 'auth_failures', label: 'Auth failures', sub: 'forged, tampered or unsigned' },
+    { key: 'replays', label: 'Replays', sub: 'repeated or stale packets' }
   ];
 
   var state = {
@@ -569,6 +580,25 @@ noscript { display: block; padding: 16px; }
     });
   }
 
+
+  // ---------- security events: counts of refused packets, with an icon and words ----------
+  function renderSecurity() {
+    var host = document.getElementById('security');
+    host.replaceChildren();
+    var st = state.stats;
+    if (!st) return;
+    var auth = num(st.auth_failures) || 0, rep = num(st.replays) || 0;
+    if (auth + rep === 0) return;
+    var row = el('div', 'sec-banner');
+    row.appendChild(sevIcon('critical'));
+    row.appendChild(el('span', 'a-title', 'Security events'));
+    var parts = [];
+    if (auth) parts.push(auth + ' packet' + (auth === 1 ? '' : 's') + ' failed authentication or were unsigned');
+    if (rep) parts.push(rep + ' replayed or stale packet' + (rep === 1 ? '' : 's') + ' refused');
+    row.appendChild(el('span', 'a-detail', parts.join(' \u00b7 ') + '. None were charted.'));
+    host.appendChild(row);
+  }
+
   // ---------- rendering ----------
   var tileValues = {};
   function buildTiles() {
@@ -587,6 +617,7 @@ noscript { display: block; padding: 16px; }
   function render() {
     renderStatus();
     renderAlerts();
+    renderSecurity();
     var has = state.samples.length > 0;
     document.getElementById('empty').hidden = has || !state.loaded;
     document.getElementById('charts').hidden = !has || state.table;
