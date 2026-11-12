@@ -4,10 +4,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <optional>
+#include <string>
 
 #include "orbitguard/dashboard_routes.hpp"
 #include "orbitguard/dashboard_html.hpp"
 #include "orbitguard/packet_codec.hpp"
+#include "orbitguard/recording.hpp"
 #include "orbitguard/telemetry_store.hpp"
 #include "orbitguard/time_util.hpp"
 #include "orbitguard/udp_socket.hpp"
@@ -20,10 +23,13 @@ void on_signal(int) { g_stop = 1; }
 
 void usage(const char* prog) {
     std::fprintf(stderr,
-        "Usage: %s [--port N] [--http-port N] [--no-dashboard] [--max-packets N] [--idle-timeout-s N]\n"
+        "Usage: %s [--port N] [--http-port N] [--no-dashboard] [--record FILE]\n"
+        "          [--max-packets N] [--idle-timeout-s N]\n"
         "  --port N            UDP port to listen on, localhost only (default 5000)\n"
         "  --http-port N       dashboard HTTP port, localhost only (default 8080)\n"
         "  --no-dashboard      do not start the web dashboard\n"
+        "  --record FILE       save every received datagram (valid or not) to a NEW file;\n"
+        "                      refuses to overwrite. Replay with telemetry_replay\n"
         "  --max-packets N     exit after N valid packets (default 0 = unlimited)\n"
         "  --idle-timeout-s N  exit if nothing arrives for N seconds (default 0 = never)\n", prog);
 }
@@ -37,8 +43,14 @@ bool parse_num(const char* s, double& out) {
 int main(int argc, char** argv) {
     double port = 5000, http_port = 8080, max_packets = 0, idle_s = 0;
     bool dashboard = true;
+    std::string record_path;
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--help")) { usage(argv[0]); return 0; }
+        if (!std::strcmp(argv[i], "--record")) {
+            if (i + 1 >= argc) { usage(argv[0]); return 2; }
+            record_path = argv[++i];
+            continue;
+        }
         if (!std::strcmp(argv[i], "--no-dashboard")) { dashboard = false; continue; }
         double* target = nullptr;
         if (!std::strcmp(argv[i], "--port")) target = &port;
@@ -55,6 +67,14 @@ int main(int argc, char** argv) {
 
     std::signal(SIGINT, on_signal);
     std::signal(SIGTERM, on_signal);
+
+    std::optional<RecordWriter> recorder;
+    if (!record_path.empty()) {
+        auto w = RecordWriter::create(record_path);
+        if (!w) { std::fprintf(stderr, "error: %s\n", w.error().message.c_str()); return 1; }
+        recorder.emplace(std::move(w.value()));
+        std::printf("ground_station: recording to %s\n", record_path.c_str());
+    }
 
     auto sock = UdpSocket::bind_loopback(static_cast<std::uint16_t>(port));
     if (!sock) { std::fprintf(stderr, "error: %s\n", sock.error().message.c_str()); return 1; }
@@ -83,6 +103,16 @@ int main(int argc, char** argv) {
         }
         idle_ms = 0;
 
+        // Record the raw datagram before validating it, so invalid traffic is captured too.
+        const std::uint64_t rx_ms = unix_time_ms();
+        if (recorder) {
+            auto wrote = recorder->append(Record{rx_ms, rx.value().data});
+            if (!wrote) {
+                std::fprintf(stderr, "recording stopped: %s\n", wrote.error().message.c_str());
+                recorder.reset();  // keep receiving; just stop recording
+            }
+        }
+
         auto pkt = deserialize(rx.value().data);
         if (!pkt) {
             store.reject();
@@ -91,7 +121,7 @@ int main(int argc, char** argv) {
         }
         ++valid;
         const Telemetry& t = pkt.value();
-        const SequenceStatus st = store.ingest(t, unix_time_ms());
+        const SequenceStatus st = store.ingest(t, rx_ms);
         const char* note = st == SequenceStatus::Gap ? " [GAP]" : st == SequenceStatus::Duplicate ? " [DUP]"
                          : st == SequenceStatus::OutOfOrder ? " [OUT-OF-ORDER]"
                          : st == SequenceStatus::Restart ? " [SENDER RESTART]" : "";
@@ -101,6 +131,8 @@ int main(int argc, char** argv) {
         std::fflush(stdout);
     }
 
+    if (recorder) std::printf("recorded %llu datagrams to %s\n",
+                              static_cast<unsigned long long>(recorder->count()), record_path.c_str());
     const Snapshot snap = store.snapshot(0);
     std::printf("summary: valid=%llu rejected=%llu lost=%llu duplicates=%llu out_of_order=%llu restarts=%llu\n",
                 static_cast<unsigned long long>(snap.stats.valid),

@@ -7,7 +7,7 @@ telemetry over UDP to a separate **ground station** receiver on localhost. The p
 the project is the engineering around the link: an explicit wire protocol, validation,
 and failure handling.
 
-**Status: Phase 3.** Simulator, ground station, protocol, tests, a live web dashboard, link fault injection, and threshold alerts.
+**Status: Phase 3.** Simulator, ground station, protocol, tests, a live web dashboard, link fault injection, threshold alerts, and record and replay.
 
 ![OrbitGuard dashboard](docs/dashboard.png)
 
@@ -96,6 +96,32 @@ Scenarios: `battery-drain`, `overheat`, `cpu-spike`, `signal-loss` (default `nom
 
 ![Critical battery alert](docs/dashboard-alert.png)
 
+## Record and replay
+
+`ground_station --record FILE` saves every datagram it receives, **including invalid ones**,
+with its arrival time. `telemetry_replay` sends a recording back out with the original
+pacing, so a degraded-link session can be reproduced exactly and inspected on the dashboard.
+
+```sh
+./build/ground_station --port 5000 --record session.ogrec
+# ... later, into a fresh ground station:
+./build/ground_station --port 5000
+./build/telemetry_replay --file session.ogrec --port 5000 --speed 4
+```
+
+`--speed X` scales playback, and `--max-gap-ms N` (default 5000) shortens long pauses so a
+gap in the recording cannot stall a replay.
+
+A replay into a fresh ground station reproduces the original counters exactly. In one
+checked run of 304 recorded datagrams from a link with all four faults enabled, both
+stations reported `valid=275 rejected=29 lost=72 duplicates=28 out_of_order=20`.
+
+The file format is documented in `include/orbitguard/recording.hpp` (an 8-byte header,
+then `rx_time_ms`, a length and the raw bytes per datagram). Recordings are treated as
+untrusted input: record lengths are bounded before any allocation, a file cut off partway
+through a record (for example after a crash) replays everything before it and reports the
+truncation, and `--record` refuses to overwrite an existing file.
+
 ## Architecture
 
 ```mermaid
@@ -137,6 +163,7 @@ The rejected datagram is reported on stderr: `rejected packet (7 bytes): packet 
 | `packet_codec.*` | Wire format, `serialize`, `deserialize`, `CodecError` |
 | `telemetry_generator.*` | Seeded orbit/eclipse model that produces samples |
 | `alerts.*` | Threshold alerts with hysteresis |
+| `recording.*`, `replay.*` | Capture file format with a bounds-checked reader, and the paced replayer |
 | `fault_injector.*` | Seeded drop, corrupt, duplicate and reorder of wire bytes |
 | `sequence_tracker.*` | Loss, duplicate and reorder accounting (wrap-safe) |
 | `telemetry_store.*` | Thread-safe sample history and link counters shared by the receiver and the web server |
@@ -230,6 +257,8 @@ dashboard can reuse it unchanged.
   fault injection on, gaps exceed the number of packets actually dropped.
 - No Windows support (POSIX sockets).
 - The dashboard keeps the latest 600 samples in memory only; there is no persistence.
+- Recordings keep only the raw datagram and arrival time; they do not store the satellite's
+  link settings. Replay uses loopback UDP only.
 - Alert limits are compiled in; there is no config file or command-line override yet.
 - The dashboard JavaScript has no automated tests. It was checked by hand in a browser,
   and that found a real bug (the first metric's alerts were being dropped).

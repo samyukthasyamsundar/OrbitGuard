@@ -13,6 +13,8 @@ add_library(orbitguard_core
     src/alerts.cpp
     src/crc16.cpp
     src/packet_codec.cpp
+    src/recording.cpp
+    src/replay.cpp
     src/dashboard_routes.cpp
     src/fault_injector.cpp
     src/http_server.cpp
@@ -37,6 +39,9 @@ endif()
 add_executable(satellite_sim apps/satellite_sim.cpp)
 target_link_libraries(satellite_sim PRIVATE orbitguard_core)
 
+add_executable(telemetry_replay apps/telemetry_replay.cpp)
+target_link_libraries(telemetry_replay PRIVATE orbitguard_core)
+
 add_executable(ground_station apps/ground_station.cpp)
 target_link_libraries(ground_station PRIVATE orbitguard_core)
 
@@ -55,6 +60,8 @@ if(ORBITGUARD_BUILD_TESTS)
         tests/test_crc16.cpp
         tests/test_byte_io.cpp
         tests/test_packet_codec.cpp
+        tests/test_recording.cpp
+        tests/test_replay.cpp
         tests/test_sequence_tracker.cpp
         tests/test_telemetry_generator.cpp
         tests/test_fault_injector.cpp
